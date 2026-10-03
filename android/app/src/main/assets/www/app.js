@@ -1,12 +1,14 @@
 const STORAGE_KEY = 'innerGame.v5';
 const LEGACY_STORAGE_KEYS = ['innerGame.v4','innerGame.v3','innerGame.v2','innerGame.v1'];
+const GOALS = ['Stay patient','No results checking','Mark tough spots','Take 3 breaths after big pots','Stick to bankroll','Quit if tilted'];
 const defaults = {
   sessions: [],
   games:['NL100'],
+  rooms:['GG Poker','Live Casino'],
   prep: {
-    breathLevel:'beginner', breathWorkout:'focus', goals:['Stay patient','Mark tough spots',''], energy:6, focus:7, noise:3,
-    environment:{silent:true, distractions:true, water:true}, leak:'', reminder:'', stakes:'NL100', room:'',
-    stopLoss:'3 buy-ins', length:'90 min', sessionAmount:'',
+    breathLevel:'beginner', breathWorkout:'focus', goals:['Stay patient','Mark tough spots'], energy:6, focus:7, noise:3,
+    environment:{silent:true, distractions:true, water:true}, leak:'', reminder:'', stakes:'NL100',
+    stopLoss:'3 buy-ins', length:'90 min', sessionAmount:'', room:'GG Poker', startDate:'', startTime:'', endDate:'', endTime:'',
     handWarmup:{selectedIds:[],answers:{},currentIndex:0,completed:false,skipped:false}
   },
   activeSession: null
@@ -27,8 +29,6 @@ let breathWorkout = state.prep.breathWorkout || 'focus';
 let pendingDeleteSessionId = null;
 let moneyRange = 'all';
 let moneyGame = 'all';
-let moneyMode = 'bankroll';
-let selectedMoneyPoint = null;
 const BREATH_WORKOUTS = {
   focus:{name:'Focus',short:'Box breathing',description:'Steady attention before you play.',phases:[
     {name:'Inhale',duration:4,cls:'inhale',cue:'Breathe in through your nose',fill:'up'},
@@ -86,84 +86,51 @@ function rememberGame(v){
   state.games.sort((a,b)=>a.localeCompare(b)); save();
 }
 function gameOptionsHTML(){ return knownGames().map(g=>`<option value="${esc(g)}"></option>`).join(''); }
+function normalizeRoomName(v=''){ return String(v).trim().replace(/\s+/g,' '); }
+function knownRooms(){
+  const fromSessions=state.sessions.map(s=>normalizeRoomName(s.room)).filter(Boolean);
+  const fromState=(state.rooms||[]).map(normalizeRoomName).filter(Boolean);
+  return [...new Set([...fromState,...fromSessions])].sort((a,b)=>a.localeCompare(b));
+}
+function rememberRoom(v){
+  const room=normalizeRoomName(v); if(!room)return;
+  state.rooms=knownRooms();
+  if(!state.rooms.some(x=>x.toLowerCase()===room.toLowerCase())) state.rooms.push(room);
+  state.rooms.sort((a,b)=>a.localeCompare(b)); save();
+}
+function roomOptionsHTML(){ return knownRooms().map(r=>`<option value="${esc(r)}"></option>`).join(''); }
+function pad2(n){return String(n).padStart(2,'0')}
+function localDateValue(ms=Date.now()){const d=new Date(ms);return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`}
+function localTimeValue(ms=Date.now()){const d=new Date(ms);return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`}
+function localDateTimeValue(ms=Date.now()){return `${localDateValue(ms)}T${localTimeValue(ms)}`}
+function parseLocalDateTime(v){const d=new Date(v);return Number.isNaN(d.valueOf())?null:d.valueOf()}
+function ensurePrepSchedule(){
+  const p=state.prep, now=Date.now();
+  if(!p.startDate)p.startDate=localDateValue(now);
+  if(!p.startTime)p.startTime=localTimeValue(now);
+  if(!p.endDate)p.endDate=localDateValue(now+2*3600000);
+  if(!p.endTime)p.endTime=localTimeValue(now+2*3600000);
+}
+function gamificationStats(){
+  const ss=state.sessions;
+  let xp=0, aStreak=0;
+  ss.forEach(s=>{xp+=100; if((s.process||0)>=8)xp+=50; if((s.tilt||10)<=4)xp+=25; if(s.prep?.handWarmup?.completed)xp+=25;});
+  for(let i=ss.length-1;i>=0;i--){ if((ss[i].process||0)>=7)aStreak++; else break; }
+  const level=Math.floor(xp/500)+1, inLevel=xp%500;
+  const achievements=[
+    {icon:'✦',name:'First Session',desc:'Log your first session',on:ss.length>=1},
+    {icon:'◈',name:'A-Game',desc:'10 strong-process sessions',on:ss.filter(s=>(s.process||0)>=8).length>=10},
+    {icon:'⚡',name:'Volume',desc:'50 total hours',on:ss.reduce((a,s)=>a+(s.durationMs||0),0)>=50*3600000},
+    {icon:'↗',name:'Comeback',desc:'Recover after a losing session',on:ss.some((s,i)=>i&&ss[i-1].pnl<0&&s.pnl>0)},
+    {icon:'◎',name:'Tilt Proof',desc:'5 sessions with tilt ≤ 3',on:ss.filter(s=>(s.tilt||10)<=3).length>=5},
+    {icon:'♠',name:'Warm-up Pro',desc:'Complete 10 hand warm-ups',on:ss.filter(s=>s.prep?.handWarmup?.completed).length>=10}
+  ];
+  return {xp,level,inLevel,progress:inLevel/500,aStreak,achievements};
+}
 function avg(a){ return a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0; }
 function corr(xs,ys){ if(xs.length<3||xs.length!==ys.length)return null; const mx=avg(xs),my=avg(ys); let n=0,dx=0,dy=0; xs.forEach((x,i)=>{const a=x-mx,b=ys[i]-my;n+=a*b;dx+=a*a;dy+=b*b}); return dx&&dy?n/Math.sqrt(dx*dy):null; }
-
-function toLocalParts(value=Date.now()){
-  const d=value instanceof Date?value:new Date(value);
-  const safe=Number.isNaN(d.valueOf())?new Date():d;
-  const pad=n=>String(n).padStart(2,'0');
-  return {
-    date:`${safe.getFullYear()}-${pad(safe.getMonth()+1)}-${pad(safe.getDate())}`,
-    time:`${pad(safe.getHours())}:${pad(safe.getMinutes())}`
-  };
-}
-function localDateTime(date,time){
-  if(!date)return null;
-  const d=new Date(`${date}T${time||'00:00'}`);
-  return Number.isNaN(d.valueOf())?null:d.getTime();
-}
-function formatSessionClock(ts){
-  if(!ts)return '—';
-  const d=new Date(ts);
-  return Number.isNaN(d.valueOf())?'—':d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-}
-function formatSessionDate(ts,fallback=''){
-  if(!ts)return fallback||'—';
-  const d=new Date(ts);
-  return Number.isNaN(d.valueOf())?(fallback||'—'):d.toLocaleDateString([], {month:'short',day:'numeric',year:'numeric'});
-}
-function knownRooms(){
-  const rows=[
-    ...(state.sessions||[]).map(s=>String(s.room||'').trim()),
-    String(state.prep?.room||'').trim()
-  ].filter(Boolean);
-  return [...new Set(rows)].sort((a,b)=>a.localeCompare(b));
-}
-function dayPart(){
-  const h=new Date().getHours();
-  return h<12?'morning':h<18?'afternoon':'evening';
-}
-function gameStats(){
-  const ss=state.sessions||[];
-  const totalHours=ss.reduce((a,s)=>a+(Number(s.durationMs)||0),0)/3600000;
-  const strong=ss.filter(s=>(Number(s.process)||0)>=8).length;
-  const calm=ss.filter(s=>(Number(s.tilt)||0)<=4).length;
-  const wins=ss.filter(s=>(Number(s.pnl)||0)>0).length;
-  const xp=ss.length*90 + strong*35 + calm*15 + Math.round(totalHours*3);
-  const level=Math.max(1,Math.floor(xp/500)+1);
-  const into=xp%500;
-  const dates=[...new Set(ss.map(s=>s.startDate||s.date).filter(Boolean))].sort();
-  let streak=dates.length?1:0;
-  for(let i=dates.length-1;i>0;i--){
-    const a=new Date(`${dates[i]}T00:00:00`), b=new Date(`${dates[i-1]}T00:00:00`);
-    if(Math.round((a-b)/86400000)===1)streak++; else break;
-  }
-  const achievements=[
-    {icon:'✦',title:'First Log',sub:'Log your first session',unlocked:ss.length>=1},
-    {icon:'◇',title:'A-Game',sub:'5 sessions at 8+ process',unlocked:strong>=5},
-    {icon:'◉',title:'Tilt Proof',sub:'5 low-tilt sessions',unlocked:calm>=5},
-    {icon:'⚡',title:'Volume',sub:'50 hours tracked',unlocked:totalHours>=50},
-    {icon:'↗',title:'Momentum',sub:'3 winning sessions',unlocked:wins>=3},
-    {icon:'◎',title:'Level 5',sub:'Reach level five',unlocked:level>=5}
-  ];
-  return {xp,level,into,progress:Math.min(100,into/500*100),streak,totalHours,strong,calm,wins,achievements};
-}
-function xpPanel(compact=false){
-  const g=gameStats(), unlocked=g.achievements.filter(a=>a.unlocked).length;
-  return `<section class="card xp-card ${compact?'compact-xp':''}">
-    <div class="xp-top"><div class="xp-orb">✦</div><div class="xp-copy"><small>INNER GAME LEVEL</small><strong>Level ${g.level}</strong><span>${g.xp.toLocaleString()} XP · ${unlocked}/${g.achievements.length} badges</span></div><div class="streak-pill">🔥 ${g.streak}</div></div>
-    <div class="xp-track"><i style="width:${g.progress}%"></i></div>
-    <div class="xp-caption"><span>${g.into} / 500 XP</span><span>Next level</span></div>
-  </section>`;
-}
-function achievementPanel(){
-  const g=gameStats();
-  return `<section class="card pad achievement-section"><div class="row between section-head"><div><div class="section-title">Achievements</div><div class="session-meta">Progress without turning poker into a slot machine.</div></div><span class="achievement-count">${g.achievements.filter(a=>a.unlocked).length}/${g.achievements.length}</span></div>
-  <div class="achievement-grid">${g.achievements.map(a=>`<div class="achievement ${a.unlocked?'unlocked':'locked'}"><span>${a.icon}</span><strong>${a.title}</strong><small>${a.sub}</small></div>`).join('')}</div></section>`;
-}
 function navigate(to){ route=to; stopBreath(); stopSessionTicker(); render(); window.scrollTo({top:0,behavior:'instant'}); }
-function tabs(active){ return `<nav class="tabs">${[['home','⌂','Home'],['sessions','▤','Sessions'],['insights','▦','Stats'],['profile','•••','More']].map(([r,i,l])=>`<button class="tab ${active===r?'active':''}" data-nav="${r}"><span class="ti">${i}</span><span>${l}</span></button>`).join('')}</nav>`; }
+function tabs(active){ return `<nav class="tabs">${[['home','⌂','Home'],['sessions','▤','Sessions'],['insights','▥','Insights'],['profile','◎','Profile']].map(([r,i,l])=>`<button class="tab ${active===r?'active':''}" data-nav="${r}"><span class="ti">${i}</span><span>${l}</span></button>`).join('')}</nav>`; }
 function header(title,sub,back=true){ return `<div class="hero"><div class="topbar">${back?'<button class="back" data-back aria-label="Back">‹</button>':''}<div class="hero-copy"><h1>${title}</h1><p class="subtitle">${sub}</p></div></div></div>`; }
 function stepper(active){ const labels=['Breathe','Goals','3 Hands','Plan']; return `<div class="stepper four">${labels.map((l,i)=>`<div class="step ${i<active?'done':''} ${i===active?'active':''}"><div class="bubble">${i+1}</div><span>${l}</span></div>`).join('')}</div>`; }
 function appShell(content,tab='home'){ return `<main class="app-shell">${content}${tabs(tab)}</main>`; }
@@ -178,32 +145,22 @@ function scheduleBreakReminders(){ if(!state.activeSession)return; nativeCall('s
 function cancelBreakReminders(){ nativeCall('cancelBreakReminders'); }
 
 function home(){
-  const s=state.sessions, pnl=s.reduce((a,x)=>a+(Number(x.pnl)||0),0), ps=avg(s.map(x=>Number(x.process)||0)), g=gameStats();
-  const last=s.at(-1), goal=(state.prep.goals||[]).find(x=>String(x).trim())||'Play the process, not the result';
-  const monthSessions=s.filter(x=>{const d=new Date(`${x.startDate||x.date}T00:00:00`),n=new Date();return !Number.isNaN(d.valueOf())&&d.getMonth()===n.getMonth()&&d.getFullYear()===n.getFullYear();});
+  const s=state.sessions, pnl=s.reduce((a,x)=>a+x.pnl,0), ps=avg(s.map(x=>x.process||0)), g=gamificationStats();
+  const monthSessions=s.filter(x=>{const d=new Date(`${x.date||localDateValue()}T00:00:00`),n=new Date();return d.getMonth()===n.getMonth()&&d.getFullYear()===n.getFullYear();});
   const monthPnl=monthSessions.reduce((a,x)=>a+(Number(x.pnl)||0),0);
   return appShell(`
-    <div class="apple-home-head"><div><small>Good ${dayPart()},</small><h1>Inner Game</h1><p>Play clearer. Improve faster.</p></div><img class="app-mark" src="app-icon.svg" alt="Inner Game"></div>
+    <div class="hero home-hero"><div class="eyebrow">INNER GAME</div><h1>Play a better <span class="accent">you.</span></h1><p class="subtitle">Prepare deliberately. Play focused. Review without judgment.</p></div>
     <div class="stack">
-      <section class="card hero-money-card">
-        <div class="row between"><div><small>This month</small><strong class="${monthPnl>=0?'positive':'negative'}">${money(monthPnl)}</strong></div><button class="round-link" data-nav="sessions">›</button></div>
-        <div class="home-sparkline">${miniSparkline(monthSessions)}</div>
-        <div class="home-metrics"><span><b>${monthSessions.length}</b><small>Sessions</small></span><span><b>${g.totalHours.toFixed(1)}h</b><small>Tracked</small></span><span><b>${ps?ps.toFixed(1):'—'}</b><small>Process</small></span></div>
+      <section class="card pad apple-hero-card">
+        <div class="row between"><div><small class="eyebrow">THIS MONTH</small><div class="hero-money ${monthPnl>=0?'positive':'negative'}">${money(monthPnl)}</div></div><div class="level-orb">L${g.level}</div></div>
+        <div class="xp-track"><i style="width:${Math.max(5,g.progress*100)}%"></i></div>
+        <div class="row between session-meta"><span>${g.xp.toLocaleString()} XP · Level ${g.level}</span><span>${500-g.inLevel} XP to next</span></div>
+        <div class="home-kpis"><div><strong>${s.length}</strong><span>Sessions</span></div><div><strong>${ps?ps.toFixed(1):'—'}</strong><span>Avg process</span></div><div><strong>${g.aStreak}</strong><span>A-game streak</span></div></div>
       </section>
-      ${xpPanel(true)}
-      <section class="card focus-card"><div class="focus-icon">◎</div><div><small>TODAY'S FOCUS</small><strong>${esc(goal)}</strong></div><span class="chev">›</span></section>
-      ${state.activeSession?`<button class="action-card apple-action primary" data-nav="active"><span class="icon">◷</span><span><div class="action-title">Session in progress</div><div class="action-sub">${esc(state.activeSession.stakes)}${state.activeSession.room?` · ${esc(state.activeSession.room)}`:''}</div></span><span class="chev">›</span></button>`:`<button class="action-card apple-action primary" data-start-prep><span class="icon">＋</span><span><div class="action-title">Start a session</div><div class="action-sub">Prepare, play, review</div></span><span class="chev">›</span></button>`}
-      <button class="action-card apple-action" data-nav="log"><span class="icon">✎</span><span><div class="action-title">Log past session</div><div class="action-sub">Add room, time, result and review</div></span><span class="chev">›</span></button>
-      ${last?`<section class="card recent-strip"><small>LAST SESSION</small><div class="row between"><div><strong>${esc(last.game)}${last.room?` · ${esc(last.room)}`:''}</strong><span>${formatSessionDate(last.startedAt,last.date)} · Process ${last.process}/10</span></div><b class="${last.pnl>=0?'positive':'negative'}">${money(last.pnl)}</b></div></section>`:''}
+      ${state.activeSession?`<button class="action-card primary apple-cta" data-nav="active"><span class="icon">◷</span><span><div class="action-title">Resume Session</div><div class="action-sub">Timer, room and next break</div></span><span class="chev">›</span></button>`:`<button class="action-card primary apple-cta" data-start-prep><span class="icon">＋</span><span><div class="action-title">New Session</div><div class="action-sub">Prep your mind and game plan</div></span><span class="chev">›</span></button>`}
+      <section class="card pad focus-card"><div class="row between"><div><small class="eyebrow">TODAY'S FOCUS</small><div class="section-title compact-title">Process over results</div></div><div class="focus-icon">◎</div></div><p class="body-copy">One clean decision at a time. Let the result be feedback, not a verdict.</p></section>
+      <button class="action-card" data-nav="log"><span class="icon">✎</span><span><div class="action-title">Log Past Session</div><div class="action-sub">Add a session you already played</div></span><span class="chev">›</span></button>
     </div>`, 'home');
-}
-function miniSparkline(rows){
-  const vals=[];let t=0;(rows||[]).forEach(s=>{t+=Number(s.pnl)||0;vals.push(t)});
-  if(vals.length<2)return `<div class="spark-empty">Your monthly curve will appear here.</div>`;
-  const min=Math.min(...vals,0),max=Math.max(...vals,0),span=Math.max(1,max-min),W=320,H=72,P=4;
-  const pts=vals.map((v,i)=>[P+(i/(vals.length-1))*(W-P*2),P+((max-v)/span)*(H-P*2)]);
-  const d=pts.map((p,i)=>`${i?'L':'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><path d="${d}"/></svg>`;
 }
 function bestStateLabel(){ if(!state.sessions.length)return '—'; const buckets={Calm:[],Focused:[],Tense:[],Tilted:[]}; state.sessions.forEach(s=>{(buckets[s.state]??=[]).push(s.process||0)}); return Object.entries(buckets).sort((a,b)=>avg(b[1])-avg(a[1]))[0]?.[0]||'—'; }
 
@@ -329,19 +286,13 @@ function stopBreath(){
 }
 function resetBreath(){ stopBreath(); breathRemaining=levelMinutes(breathLevel)*60; render(); }
 
-function goals(){
-  const p=state.prep;
-  while(p.goals.length<3)p.goals.push('');
-  const count=p.goals.filter(g=>String(g).trim()).length;
-  return appShell(`${header('Goals & <span class="accent">Readiness</span>','Write the process you actually want to follow.')}
+function goals(){ const p=state.prep; while(p.goals.length<3)p.goals.push(''); return appShell(`${header('Goals & <span class="accent">Readiness</span>','Write the process you want to follow today.')}
   ${stepper(1)}
-  <section class="card pad"><div class="row between section-head"><div><div class="section-title">Your process goals</div><div class="session-meta">Free text. Keep them observable and specific.</div></div><strong class="accent-text" id="goalCount">${count}/3</strong></div>
-  <div class="free-goals">${p.goals.slice(0,3).map((g,i)=>`<div class="goal-input-row"><span>${i+1}</span><input type="text" maxlength="120" data-goal-input="${i}" value="${esc(g)}" placeholder="${['e.g. Take 3 breaths after big pots','e.g. No results checking while playing','e.g. Mark tough river spots for review'][i]}"></div>`).join('')}</div>
-  <div class="goal-tip">Good goal = something you can do, not something you need to win.</div></section>
-  <section class="card pad"><div class="section-title">Readiness</div>${rangeRow('Energy','energy',p.energy)}${rangeRow('Focus','focus',p.focus)}${rangeRow('Mental Noise','noise',p.noise)}</section>
+  <section class="card pad"><div class="row between section-head"><div><div class="section-title">Your process goals</div><div class="session-meta">Free text — make each goal specific and controllable.</div></div><span class="goal-count">3 max</span></div>
+  <div class="free-goals">${[0,1,2].map(i=>`<div class="goal-input-row"><span>${i+1}</span><input type="text" maxlength="120" data-goal-input="${i}" value="${esc(p.goals[i]||'')}" placeholder="${i===0?'e.g. Pause before big river decisions':i===1?'e.g. No cashier checking during play':'e.g. Take a full reset after a big pot'}"></div>`).join('')}</div></section>
+  <section class="card pad"><div class="section-title">Readiness Check</div>${rangeRow('Energy','energy',p.energy)}${rangeRow('Focus','focus',p.focus)}${rangeRow('Mental Noise','noise',p.noise)}</section>
   <section class="card pad"><div class="section-title">Environment</div><div class="goal-grid">${envChip('silent','Phone on silent',p.environment.silent)}${envChip('distractions','No distractions',p.environment.distractions)}${envChip('water','Water ready',p.environment.water)}</div></section>
-  <button class="btn primary" data-nav="handsIntro">Continue <span>→</span></button>`,'home');
-}
+  <button class="btn primary" data-nav="handsIntro">Continue <span>→</span></button>`,'home'); }
 function rangeRow(label,key,val){ return `<div class="range-row"><div class="range-label"><span class="label">${label}</span><strong id="v-${key}">${val}</strong></div><input type="range" min="1" max="10" value="${val}" data-range="${key}"><div class="range-scale"><span>Low</span><span>High</span></div></div>`; }
 function envChip(key,label,val){ return `<button class="goal-chip ${val?'selected':''}" data-env="${key}">${val?'✓ ':''}${label}</button>`; }
 
@@ -412,23 +363,21 @@ function handsComplete(){ const hw=ensureHandWarmup(), hs=selectedHands(); retur
   <div class="section-title list-heading">Take one idea into your session</div><div class="notice"><strong>Make the reason explicit.</strong><br>Before a big decision, name the main reason for your action instead of reacting automatically.</div>
   <button class="btn primary" data-nav="review">Continue to Game Plan <span>→</span></button><button class="btn ghost" data-nav="prep">Back to Preparation</button>`,'home'); }
 
-function review(){
-  const p=state.prep; const hw=p.handWarmup||{}; const warmupText=hw.completed?'3 hands completed':hw.skipped?'Skipped for this session':'Not completed yet';
-  return appShell(`${header('Review & <span class="accent">Plan</span>','Set the table context before you start.')}
+function review(){ ensurePrepSchedule(); const p=state.prep; const hw=p.handWarmup||{}; const warmupText=hw.completed?'3 hands completed':hw.skipped?'Skipped for this session':'Not completed yet'; return appShell(`${header('Session <span class="accent">Setup</span>','Everything you need before you sit down.')}
   ${stepper(3)}
   <section class="card pad"><button class="prep-item nested" data-nav="handsIntro"><span class="icon">${hw.completed?'✓':'♠'}</span><span class="prep-copy"><strong>3-Hand Warm-up</strong><small>${warmupText}</small></span><span class="chev">›</span></button></section>
-  <section class="card pad stack"><div class="field"><label>One leak to watch today</label><input type="text" data-prep-text="leak" value="${esc(p.leak)}" placeholder="e.g. Calling too wide vs. 3-bets in position"></div><div class="field"><label>One reminder for this session</label><input type="text" data-prep-text="reminder" value="${esc(p.reminder)}" placeholder="e.g. Stay calm and stick to my process"></div></section>
-  <section class="card pad"><div class="section-title">Session Setup</div><div class="stack">
+  <section class="card pad stack"><div class="field"><label>One leak to watch today</label><input type="text" data-prep-text="leak" value="${esc(p.leak)}" placeholder="e.g. Calling too wide vs. 3-bets"></div><div class="field"><label>One reminder for this session</label><input type="text" data-prep-text="reminder" value="${esc(p.reminder)}" placeholder="e.g. Slow down after big pots"></div></section>
+  <section class="card pad"><div class="section-title">Game & place</div><div class="stack">
     ${gameField('Game / Stakes','stakes',p.stakes)}
-    <div class="field"><label>Room / Location</label><input type="text" list="knownRooms" data-prep-text="room" value="${esc(p.room||'')}" placeholder="GG Poker, Bellagio, home game…" autocomplete="off"><datalist id="knownRooms">${knownRooms().map(r=>`<option value="${esc(r)}"></option>`).join('')}</datalist></div>
+    ${roomField('Room / Site','room',p.room)}
     ${simpleField('Session amount ($)','sessionAmount',p.sessionAmount,'number','Amount you are starting the session with')}
-    ${simpleField('Stop-loss','stopLoss',p.stopLoss,'text')}
-    ${simpleField('Target session length','length',p.length,'text')}
   </div></section>
+  <section class="card pad"><div class="section-title">Session window</div><div class="date-time-grid"><div class="field"><label>Start date</label><input type="date" data-prep-text="startDate" value="${esc(p.startDate)}"></div><div class="field"><label>Start time</label><input type="time" data-prep-text="startTime" value="${esc(p.startTime)}"></div><div class="field"><label>End date</label><input type="date" data-prep-text="endDate" value="${esc(p.endDate)}"></div><div class="field"><label>End time</label><input type="time" data-prep-text="endTime" value="${esc(p.endTime)}"></div></div><div class="session-meta top-gap">These are saved with the session and can be edited afterward.</div></section>
+  <section class="card pad"><div class="section-title">Guardrails</div><div class="stack">${simpleField('Stop-loss','stopLoss',p.stopLoss,'text')}${simpleField('Target session length','length',p.length,'text')}</div></section>
   <div class="notice"><strong>Hourly reset</strong><br>Once you start, the app will remind you every hour to stop for a 5-minute refresh.</div>
   <div id="startError" class="form-error" aria-live="polite"></div>
-  <button class="btn primary" data-start-playing>Start Playing <span>→</span></button>`,'home');
-}
+  <button class="btn primary" data-start-playing>Start Playing <span>→</span></button>`,'home'); }
+function roomField(label,key,val){ return `<div class="field"><label>${label}</label><input type="text" list="knownRooms" data-prep-text="${key}" data-room-input value="${esc(val||'')}" autocomplete="off" placeholder="e.g. GG Poker or Casino Barcelona"><datalist id="knownRooms">${roomOptionsHTML()}</datalist><small class="field-hint">New rooms/sites are remembered automatically.</small></div>`; }
 function simpleField(label,key,val,type='text',hint=''){ return `<div class="field"><label>${label}</label><input type="${type}" ${type==='number'?'min="0" step="1" inputmode="decimal"':''} data-prep-text="${key}" value="${esc(val)}">${hint?`<small class="field-hint">${hint}</small>`:''}</div>`; }
 function gameField(label,key,val){
   return `<div class="field"><label>${label}</label><input type="text" list="knownGames" data-prep-text="${key}" data-game-input value="${esc(val)}" autocomplete="off"><datalist id="knownGames">${gameOptionsHTML()}</datalist><small class="field-hint">New game names are saved automatically for next time.</small></div>`;
@@ -440,41 +389,31 @@ function activeSession(){
   const now=Date.now(), elapsed=now-a.startedAt;
   const hourMs=60*60*1000, cycle=elapsed%hourMs, toBreak=hourMs-cycle;
   const nextBreakNumber=Math.floor(elapsed/hourMs)+1;
-  const goals=(a.prep?.goals||[]).filter(Boolean).slice(0,3);
-  return appShell(`${header('Live Session','Stay with the process. The clock handles the rest.',false)}
+  return appShell(`${header('Live <span class="accent">Session</span>','Stay with the process. The clock handles the rest.',false)}
     <section class="active-clock-card card pad">
       <div class="live-pill"><span class="live-dot"></span> RUNNING</div>
       <div class="session-clock" id="sessionElapsed">${formatDuration(elapsed)}</div>
-      <div class="clock-caption">${esc(a.stakes)}${a.room?` · ${esc(a.room)}`:''}</div>
+      <div class="clock-caption">Time played</div>
+      <div class="live-session-card"><div><strong>${esc(a.stakes)}</strong><span>${esc(a.room||'No room')}</span></div><div><small>Started</small><b>${new Date(a.startedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</b></div></div>
       <div class="break-ring"><div><small>Next 5-min reset</small><strong id="nextBreak">${formatDuration(toBreak)}</strong></div></div>
     </section>
-    <section class="card pad session-summary">
-      <div class="summary-row"><span>Started</span><strong>${formatSessionDate(a.startedAt)} · ${formatSessionClock(a.startedAt)}</strong></div>
-      <div class="summary-row"><span>Started with</span><strong>${money(a.startedAmount)}</strong></div>
-      ${a.room?`<div class="summary-row"><span>Room</span><strong>${esc(a.room)}</strong></div>`:''}
-    </section>
-    ${goals.length?`<section class="card pad"><div class="section-title">Your goals</div><div class="live-goals">${goals.map(g=>`<div><span>✓</span><p>${esc(g)}</p></div>`).join('')}</div></section>`:''}
-    <div class="notice"><strong>Reset #${nextBreakNumber}</strong><br>When the reminder hits: stand up, hydrate, look away from the tables, and take the full five minutes.</div>
-    <button class="btn primary" data-finish-session>End Session <span>→</span></button>
+    <section class="card pad session-summary"><div class="summary-row"><span>Started with</span><strong>${money(a.startedAmount)}</strong></div><div class="summary-row"><span>Room</span><strong>${esc(a.room||'—')}</strong></div><div class="summary-row"><span>Date</span><strong>${esc(a.date)}</strong></div></section>
+    <div class="goal-review-live"><small>YOUR GOALS</small>${(a.prep?.goals||[]).filter(Boolean).map(g=>`<div>✓ ${esc(g)}</div>`).join('')||'<div>Keep your decisions deliberate.</div>'}</div>
+    <button class="btn primary" data-finish-session>Finish Session <span>→</span></button>
     <button class="btn ghost" data-nav="home">Back to Home</button>`, 'home');
 }
 function startSessionTicker(){ stopSessionTicker(); if(route!=='active'||!state.activeSession)return; sessionTicker=setInterval(()=>{ const a=state.activeSession;if(!a)return;const elapsed=Date.now()-a.startedAt;const hourMs=3600000;const toBreak=hourMs-(elapsed%hourMs); const e=document.getElementById('sessionElapsed'),b=document.getElementById('nextBreak'); if(e)e.textContent=formatDuration(elapsed); if(b)b.textContent=formatDuration(toBreak); },1000); }
 function stopSessionTicker(){ if(sessionTicker)clearInterval(sessionTicker); sessionTicker=null; }
 
-function logSession(){
-  const a=state.activeSession, now=Date.now(), start=toLocalParts(a?.startedAt||now), end=toLocalParts(now), startedPrefill=a?.startedAmount ?? '';
-  return appShell(`${header('End <span class="accent">Session</span>','Close the loop while the session is fresh.')}
+function logSession(){ const a=state.activeSession; const endNow=Date.now(); const startMs=a?.startedAt ?? endNow-2*3600000; const endMs=endNow; return appShell(`${header('End <span class="accent">Session</span>','Results are data. The review is the work.')}
   <form id="logForm" class="stack">
-   <section class="card pad stack">
-    <div class="field"><label>Game / Stakes</label><input name="game" type="text" list="knownGamesLog" data-game-input value="${esc(a?.stakes||state.prep.stakes||'NL100')}" required autocomplete="off"><datalist id="knownGamesLog">${gameOptionsHTML()}</datalist></div>
-    <div class="field"><label>Room / Location</label><input name="room" type="text" list="knownRoomsLog" value="${esc(a?.room||state.prep.room||'')}" placeholder="GG Poker, casino, home game…"><datalist id="knownRoomsLog">${knownRooms().map(r=>`<option value="${esc(r)}"></option>`).join('')}</datalist></div>
-    <div class="date-time-card"><div><small>START</small><div class="date-time-grid"><input name="startDate" type="date" value="${start.date}" required><input name="startTime" type="time" value="${start.time}" required></div></div><div><small>END</small><div class="date-time-grid"><input name="endDate" type="date" value="${end.date}" required><input name="endTime" type="time" value="${end.time}" required></div></div></div>
-    <div class="money-grid"><div class="field"><label>Started with ($)</label><input name="started" type="number" min="0" step="1" inputmode="decimal" value="${esc(startedPrefill)}" required></div><div class="field"><label>Finished with ($)</label><input name="finished" type="number" min="0" step="1" inputmode="decimal" required></div></div>
-   </section>
-   <section class="card pad"><div class="section-title">Inner Game Review</div>${rangeRow('Process','process',7)}${rangeRow('Self-judgment','judgment',4)}${rangeRow('Tilt','tilt',3)}${rangeRow('Trust','trust',7)}<div class="field top-gap"><label>Non-judgmental observation</label><textarea name="note" placeholder="Describe what happened, not what it says about you."></textarea></div></section>
+   <section class="card pad stack"><div class="field"><label>Game / Stakes</label><input name="game" type="text" list="knownGamesLog" data-game-input value="${esc(a?.stakes||state.prep.stakes||'NL100')}" required autocomplete="off"><datalist id="knownGamesLog">${gameOptionsHTML()}</datalist></div><div class="field"><label>Room / Site</label><input name="room" type="text" list="knownRoomsLog" data-room-input value="${esc(a?.room||state.prep.room||'')}" autocomplete="off"><datalist id="knownRoomsLog">${roomOptionsHTML()}</datalist></div><div class="date-time-grid"><div class="field span-2"><label>Started</label><input name="startAt" type="datetime-local" value="${localDateTimeValue(startMs)}" required></div><div class="field span-2"><label>Ended</label><input name="endAt" type="datetime-local" value="${localDateTimeValue(endMs)}" required></div></div><div class="money-grid"><div class="field"><label>Started with ($)</label><input name="started" type="number" min="0" step="1" inputmode="decimal" value="${esc(a?.startedAmount??'')}" required></div><div class="field"><label>Finished with ($)</label><input name="finished" type="number" min="0" step="1" inputmode="decimal" required></div></div></section>
+   <section class="card pad"><div class="section-title">Goals review</div><div class="saved-goals">${(a?.prep?.goals||state.prep.goals||[]).filter(Boolean).map(g=>`<div><span>✓</span>${esc(g)}</div>`).join('')||'<div class="session-meta">No goals were set.</div>'}</div></section>
+   <section class="card pad"><div class="section-title">Inner Game Review</div>${rangeRow('Process','process',7)}${rangeRow('Self-judgment','judgment',4)}${rangeRow('Tilt','tilt',3)}${rangeRow('Trust','trust',7)}<div class="field top-gap"><label>Non-judgmental observation</label><textarea name="note" placeholder="What happened? What will you repeat or adjust?"></textarea></div></section>
    <button class="btn primary" type="submit">Save Session</button>
-  </form>`,'sessions');
-}
+  </form>`,'sessions'); }
+
+
 function filterMoneySessions(){
   let rows=[...state.sessions].sort((a,b)=>String(a.date).localeCompare(String(b.date)));
   if(moneyGame!=='all') rows=rows.filter(s=>s.game===moneyGame);
@@ -485,40 +424,32 @@ function filterMoneySessions(){
   return rows;
 }
 function moneyGraph(){
-  const rows=filterMoneySessions();
-  let running=0;
-  const data=rows.map(s=>{
-    running+=Number(s.pnl)||0;
-    const hours=Math.max((Number(s.durationMs)||0)/3600000,.01);
-    return {session:s,bankroll:running,sessionPnl:Number(s.pnl)||0,hourly:(Number(s.pnl)||0)/hours};
-  });
-  const key=moneyMode==='session'?'sessionPnl':moneyMode==='hourly'?'hourly':'bankroll';
-  const unit=moneyMode==='hourly'?'/hr':'';
-  const values=data.map(d=>d[key]);
-  const total=data.at(-1)?.bankroll||0;
-  const min=Math.min(...values,0), max=Math.max(...values,0), span=Math.max(1,max-min);
-  const W=340,H=190,PX=18,PY=18;
-  const points=data.map((d,i)=>[PX+(i/(Math.max(1,data.length-1)))*(W-PX*2),PY+((max-d[key])/span)*(H-PY*2)]);
+  const rows=filterMoneySessions(), cumulative=[0]; let total=0;
+  rows.forEach(s=>{total+=Number(s.pnl)||0;cumulative.push(total);});
+  const values=cumulative.length>1?cumulative:[0,0], min=Math.min(...values,0), max=Math.max(...values,0), span=Math.max(1,max-min);
+  const W=360,H=178,P=18;
+  const points=values.map((v,i)=>{const x=P+(i/(values.length-1||1))*(W-P*2);const y=P+((max-v)/span)*(H-P*2);return [x,y];});
   const path=points.map((p,i)=>`${i?'L':'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
-  const zeroY=PY+((max-0)/span)*(H-PY*2);
-  const selected=data.length?Math.max(0,Math.min(data.length-1,selectedMoneyPoint??data.length-1)):null;
-  const sel=selected!==null?data[selected]:null, selPt=selected!==null?points[selected]:null;
-  const wins=rows.filter(s=>(Number(s.pnl)||0)>0).length;
+  const zeroY=(P+((max-0)/span)*(H-P*2)).toFixed(1);
+  const firstDate=rows[0]?.date||'—', lastDate=rows.at(-1)?.date||'—';
   const best=rows.length?rows.reduce((a,b)=>(Number(b.pnl)||0)>(Number(a.pnl)||0)?b:a,rows[0]):null;
+  const worst=rows.length?rows.reduce((a,b)=>(Number(b.pnl)||0)<(Number(a.pnl)||0)?b:a,rows[0]):null;
+  const bars=rows.map((s,i)=>{const p=points[i+1],zero=Number(zeroY),val=Number(s.pnl)||0,y=Math.min(p[1],zero),h=Math.max(2,Math.abs(p[1]-zero));return `<rect class="session-bar ${val>=0?'win':'loss'}" x="${Math.max(P,p[0]-3)}" y="${y}" width="6" height="${h}" rx="3"/>`;}).join('');
+  const dots=rows.map((s,i)=>{const [x,y]=points[i+1];return `<circle class="money-dot" cx="${x}" cy="${y}" r="4"/><circle class="money-hit" data-money-point="${i}" cx="${x}" cy="${y}" r="16"/>`;}).join('');
   return `<section class="card pad bankroll-card">
-    <div class="row between section-head"><div><div class="section-title">Money</div><div class="session-meta">Touch any point to inspect a session.</div></div><strong class="${total>=0?'positive':'negative'}">${money(total)}</strong></div>
-    <div class="money-filters"><div class="range-pills">${[['7','7D'],['30','30D'],['90','3M'],['all','All']].map(([v,l])=>`<button class="${moneyRange===v?'active':''}" data-money-range="${v}">${l}</button>`).join('')}</div>
+    <div class="row between section-head"><div><div class="section-title">Bankroll</div><div class="session-meta">Tap any point for session details</div></div><div class="money-total"><strong class="${total>=0?'positive':'negative'}">${money(total)}</strong><small>${rows.length} sessions</small></div></div>
+    <div class="money-filters"><div class="range-pills">${[['7','1W'],['30','1M'],['90','3M'],['all','All']].map(([v,l])=>`<button class="${moneyRange===v?'active':''}" data-money-range="${v}">${l}</button>`).join('')}</div>
     <select id="moneyGameFilter" aria-label="Filter graph by game"><option value="all">All games</option>${knownGames().map(g=>`<option value="${esc(g)}" ${moneyGame===g?'selected':''}>${esc(g)}</option>`).join('')}</select></div>
-    <div class="money-mode segmented">${[['bankroll','Bankroll'],['session','Session'],['hourly','Hourly']].map(([v,l])=>`<button class="${moneyMode===v?'active':''}" data-money-mode="${v}">${l}</button>`).join('')}</div>
-    <div class="money-chart-wrap interactive">${rows.length?`<svg class="money-chart" id="moneyChart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Interactive money graph">
-      <defs><linearGradient id="moneyFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3be6a4" stop-opacity=".28"/><stop offset="100%" stop-color="#3be6a4" stop-opacity="0"/></linearGradient></defs>
-      <line class="money-zero" x1="${PX}" y1="${zeroY}" x2="${W-PX}" y2="${zeroY}"/>
-      ${points.length>1?`<path class="money-area" d="${path} L ${points.at(-1)[0]},${zeroY} L ${points[0][0]},${zeroY} Z"/><path class="money-line" d="${path}"/>`:''}
-      ${points.map(([x,y],i)=>`<circle class="${i===selected?'selected':''}" data-money-point="${i}" cx="${x}" cy="${y}" r="${i===selected?6:4}" tabindex="0"/>`).join('')}
-    </svg>
-    ${sel&&selPt?`<div class="money-tooltip" style="--x:${(selPt[0]/W*100).toFixed(1)}%;--y:${(selPt[1]/H*100).toFixed(1)}%"><small>${esc(sel.session.startDate||sel.session.date)} · ${esc(sel.session.game)}</small><strong class="${sel.sessionPnl>=0?'positive':'negative'}">${money(sel.sessionPnl)}</strong><span>${moneyMode==='hourly'?`${money(sel.hourly)}/hr`:moneyMode==='bankroll'?`Bankroll ${money(sel.bankroll)}`:`${sel.session.room?esc(sel.session.room)+' · ':''}Process ${sel.session.process}/10`}</span></div>`:''}`:`<div class="empty graph-empty">No sessions match these filters.</div>`}</div>
-    <div class="money-fun-stats"><div><small>Win sessions</small><strong>${rows.length?Math.round(wins/rows.length*100):0}%</strong></div><div><small>Best session</small><strong class="positive">${best?money(best.pnl):'—'}</strong></div><div><small>Tracked</small><strong>${rows.length}</strong></div></div>
+    <div class="money-chart-wrap">${rows.length?`<div id="moneyTooltip" class="money-tooltip hidden"></div><svg class="money-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cumulative profit and loss graph"><defs><linearGradient id="moneyFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#37e7b0" stop-opacity=".30"/><stop offset="100%" stop-color="#5b7cfa" stop-opacity=".02"/></linearGradient></defs><line class="money-zero" x1="${P}" y1="${zeroY}" x2="${W-P}" y2="${zeroY}"/>${bars}<path class="money-area" d="${path} L ${points.at(-1)[0]},${H-P} L ${points[0][0]},${H-P} Z"/><path class="money-line" d="${path}"/>${dots}</svg>`:`<div class="empty graph-empty">No sessions match these filters.</div>`}</div>
+    ${rows.length?`<div class="graph-fun-stats"><div><small>Best</small><strong class="positive">${money(best?.pnl||0)}</strong></div><div><small>Worst</small><strong class="negative">${money(worst?.pnl||0)}</strong></div><div><small>Win rate</small><strong>${Math.round(rows.filter(s=>s.pnl>0).length/rows.length*100)}%</strong></div></div>`:''}
+    <div class="graph-footer"><span>${esc(firstDate)}</span><span>Swipe / tap points</span><span>${esc(lastDate)}</span></div>
   </section>`;
+}
+function showMoneyPoint(i){
+  const rows=filterMoneySessions(), s=rows[Number(i)], tip=document.getElementById('moneyTooltip'); if(!s||!tip)return;
+  const cumulative=rows.slice(0,Number(i)+1).reduce((a,x)=>a+(Number(x.pnl)||0),0);
+  tip.innerHTML=`<small>${esc(s.date)} · ${esc(s.game)}${s.room?` · ${esc(s.room)}`:''}</small><strong class="${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</strong><span>Cumulative ${money(cumulative)}</span>`;
+  tip.classList.remove('hidden');
 }
 function sessionDeleteModal(){
   if(!pendingDeleteSessionId)return '';
@@ -526,31 +457,27 @@ function sessionDeleteModal(){
   if(!item){pendingDeleteSessionId=null;return '';}
   return `<div class="modal-backdrop" role="presentation"><section class="confirm-sheet" role="dialog" aria-modal="true" aria-labelledby="deleteTitle"><div class="danger-icon">×</div><h2 id="deleteTitle">Delete this session?</h2><p>${esc(item.game)} · ${esc(item.date)} · ${money(item.pnl)}<br>This cannot be undone.</p><div class="confirm-actions"><button class="btn secondary" type="button" data-cancel-delete>Keep Session</button><button class="btn danger" type="button" data-confirm-delete>Delete Session</button></div></section></div>`;
 }
+function gamificationPanel(){
+  const g=gamificationStats(), unlocked=g.achievements.filter(a=>a.on).length;
+  return `<section class="card pad progress-card"><div class="row between"><div><small class="eyebrow">PROGRESS</small><div class="section-title compact-title">Level ${g.level}</div></div><div class="xp-badge">${g.xp} XP</div></div><div class="xp-track big"><i style="width:${Math.max(4,g.progress*100)}%"></i></div><div class="row between session-meta"><span>${g.aStreak} session A-game streak</span><span>${unlocked}/${g.achievements.length} badges</span></div><div class="achievement-grid">${g.achievements.map(a=>`<div class="achievement ${a.on?'unlocked':'locked'}"><span>${a.icon}</span><strong>${a.name}</strong><small>${a.desc}</small></div>`).join('')}</div></section>`;
+}
 function sessions(){
   const list=[...state.sessions].reverse();
   return appShell(`${header('Sessions','Track your play. Find progress.',false)}
   ${moneyGraph()}
+  ${gamificationPanel()}
   <section class="card pad"><div class="metrics"><div class="metric"><small>Total Sessions</small><strong>${list.length}</strong></div><div class="metric"><small>Avg Process Score</small><strong>${list.length?avg(list.map(x=>x.process)).toFixed(1):'—'}<span class="session-meta"> / 10</span></strong></div></div></section>
   <div class="section-title list-heading">Recent Sessions</div><section class="card session-list">${list.length?list.map(sessionRow).join(''):'<div class="empty">No sessions yet. Log one after you play.</div>'}</section>
   ${sessionDeleteModal()}`,'sessions');
 }
-function sessionRow(s){
-  const start=s.startedAt||localDateTime(s.startDate||s.date,s.startTime), end=s.endedAt||localDateTime(s.endDate||s.date,s.endTime);
-  return `<div class="session-row"><div><h3>${esc(s.game)}${s.room?` <span class="room-dot">·</span> ${esc(s.room)}`:''}</h3><div class="session-meta">${formatSessionDate(start,s.date)} · ${formatSessionClock(start)}${end?`–${formatSessionClock(end)}`:''}${s.durationMs?` · ${formatDuration(s.durationMs)}`:''}</div><div class="score">Process ${s.process}/10 · Tilt ${s.tilt}/10</div></div><div class="session-side"><div class="session-pnl ${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</div><div class="score note-snippet">${esc(s.note||'')}</div></div><div class="session-actions"><button class="session-action" data-edit-session="${esc(s.id)}" aria-label="Edit session">Edit</button><button class="session-action danger-text" data-delete-session="${esc(s.id)}" aria-label="Delete session">Delete</button></div></div>`;
-}
+function sessionRow(s){ const when=s.startAt?new Date(s.startAt).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):s.date; return `<div class="session-row"><div><h3>${esc(s.game)}</h3><div class="session-meta">${esc(when)}${s.room?` · ${esc(s.room)}`:''} · ${esc(s.state)}${s.durationMs?` · ${formatDuration(s.durationMs)}`:''}</div><div class="score">Process ${s.process}/10 · Tilt ${s.tilt}/10</div></div><div class="session-side"><div class="session-pnl ${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</div><div class="score note-snippet">${esc(s.note||'')}</div></div><div class="session-actions"><button class="session-action" data-edit-session="${esc(s.id)}" aria-label="Edit session">Edit</button><button class="session-action danger-text" data-delete-session="${esc(s.id)}" aria-label="Delete session">Delete</button></div></div>`; }
 function editSession(){
   const s=state.sessions.find(x=>x.id===editingSessionId);
   if(!s){editingSessionId=null; route='sessions'; return sessions();}
-  const start=toLocalParts(s.startedAt||localDateTime(s.startDate||s.date,s.startTime)||Date.now());
-  const end=toLocalParts(s.endedAt||localDateTime(s.endDate||s.date,s.endTime)||(s.startedAt+(s.durationMs||0))||Date.now());
-  return appShell(`${header('Edit <span class="accent">Session</span>','Correct the record without losing the review.')}
+  const startMs=s.startAt||new Date(`${s.date}T12:00:00`).valueOf(), endMs=s.endAt||((startMs||Date.now())+(s.durationMs||2*3600000));
+  return appShell(`${header('Edit <span class="accent">Session</span>','Correct anything that changed.')}
   <form id="editSessionForm" class="stack">
-   <section class="card pad stack">
-    <div class="field"><label>Game / Stakes</label><input name="game" type="text" list="knownGamesEdit" data-game-input value="${esc(s.game)}" required autocomplete="off"><datalist id="knownGamesEdit">${gameOptionsHTML()}</datalist></div>
-    <div class="field"><label>Room / Location</label><input name="room" type="text" value="${esc(s.room||'')}" placeholder="Room or site"></div>
-    <div class="date-time-card"><div><small>START</small><div class="date-time-grid"><input name="startDate" type="date" value="${start.date}" required><input name="startTime" type="time" value="${start.time}" required></div></div><div><small>END</small><div class="date-time-grid"><input name="endDate" type="date" value="${end.date}" required><input name="endTime" type="time" value="${end.time}" required></div></div></div>
-    <div class="money-grid"><div class="field"><label>Started with ($)</label><input name="started" type="number" min="0" step="1" value="${esc(s.started)}" required></div><div class="field"><label>Finished with ($)</label><input name="finished" type="number" min="0" step="1" value="${esc(s.finished)}" required></div></div>
-   </section>
+   <section class="card pad stack"><div class="field"><label>Game / Stakes</label><input name="game" type="text" list="knownGamesEdit" data-game-input value="${esc(s.game)}" required autocomplete="off"><datalist id="knownGamesEdit">${gameOptionsHTML()}</datalist></div><div class="field"><label>Room / Site</label><input name="room" type="text" list="knownRoomsEdit" data-room-input value="${esc(s.room||'')}" autocomplete="off"><datalist id="knownRoomsEdit">${roomOptionsHTML()}</datalist></div><div class="field"><label>Started</label><input name="startAt" type="datetime-local" value="${localDateTimeValue(startMs)}" required></div><div class="field"><label>Ended</label><input name="endAt" type="datetime-local" value="${localDateTimeValue(endMs)}" required></div><div class="money-grid"><div class="field"><label>Started with ($)</label><input name="started" type="number" min="0" step="1" value="${esc(s.started)}" required></div><div class="field"><label>Finished with ($)</label><input name="finished" type="number" min="0" step="1" value="${esc(s.finished)}" required></div></div></section>
    <section class="card pad"><div class="section-title">Inner Game Review</div>${rangeRow('Process','edit-process',s.process)}${rangeRow('Self-judgment','edit-judgment',s.judgment)}${rangeRow('Tilt','edit-tilt',s.tilt)}${rangeRow('Trust','edit-trust',s.trust)}<div class="field top-gap"><label>Non-judgmental observation</label><textarea name="note">${esc(s.note||'')}</textarea></div></section>
    <button class="btn primary" type="submit">Save Changes</button><button class="btn ghost danger-text" type="button" data-delete-session="${esc(s.id)}">Delete Session</button>
   </form>${sessionDeleteModal()}`,'sessions');
@@ -562,8 +489,7 @@ function simpleCompare(title, leftLabel,leftValue,rightLabel,rightValue, insight
 }
 function insights(){
   const ss=state.sessions;
-  const gameLayer=`${xpPanel()}${achievementPanel()}`;
-  if(ss.length<3) return appShell(`${header('Stats','Progress, patterns and momentum.',false)}${gameLayer}<div class="notice"><strong>More patterns unlock after 3 sessions.</strong><br>Keep logging honestly; we’ll only surface comparisons when there is enough data.</div>`,'insights');
+  if(ss.length<3) return appShell(`${header('Insights','Simple patterns from your sessions.',false)}<div class="notice"><strong>Not enough data yet.</strong><br>Log at least 3 sessions and we’ll start showing clear, plain-English patterns.</div>`,'insights');
   const lowTilt=ss.filter(x=>x.tilt<=4), highTilt=ss.filter(x=>x.tilt>=7);
   const calm=ss.filter(x=>x.state==='Calm'||x.state==='Focused'), tense=ss.filter(x=>x.state==='Tense'||x.state==='Tilted');
   const lowJudgment=ss.filter(x=>x.judgment<=4), highJudgment=ss.filter(x=>x.judgment>=7);
@@ -573,27 +499,15 @@ function insights(){
   if(lowTilt.length&&highTilt.length){const a=avg(lowTilt.map(x=>x.process)),b=avg(highTilt.map(x=>x.process));cards.push(simpleCompare('Tilt vs. decision quality','Low tilt',a,'High tilt',b,a>b?`You tend to play ${Math.abs(a-b).toFixed(1)} process points better when tilt stays low.`:`Your process score is currently similar regardless of tilt.`));}
   if(calm.length&&tense.length){const a=avg(calm.map(x=>x.process)),b=avg(tense.map(x=>x.process));cards.push(simpleCompare('Mental state vs. process','Calm / focused',a,'Tense / tilted',b,a>b?'Your calmer sessions have produced better decision quality so far.':'There is not a clear mental-state pattern yet.'));}
   if(lowJudgment.length&&highJudgment.length){const a=avg(lowJudgment.map(x=>x.process)),b=avg(highJudgment.map(x=>x.process));cards.push(simpleCompare('Self-judgment vs. process','Less judgment',a,'More judgment',b,a>b?'Being less self-critical is associated with better process in your saved sessions.':'No clear relationship yet between self-judgment and process.'));}
-  return appShell(`${header('Stats','Progress, patterns and momentum.',false)}
-    ${gameLayer}
-    <section class="card pad insight-hero"><small>Average process score</small><strong>${allProcess.toFixed(1)}<span>/10</span></strong><div class="process-pill">${processBucketLabel(allProcess)}</div><p>${best?`Your strongest saved session was ${best.process}/10 on ${esc(best.startDate||best.date)}.`:''}</p></section>
+  return appShell(`${header('Insights','Understand your game without reading a statistics textbook.',false)}
+    <section class="card pad insight-hero"><small>Your average process score</small><strong>${allProcess.toFixed(1)}<span>/10</span></strong><div class="process-pill">${processBucketLabel(allProcess)}</div><p>${best?`Your strongest saved session was ${best.process}/10 on ${esc(best.date)}.`:''}</p></section>
     <div class="stack">${cards.length?cards.join(''):'<div class="notice"><strong>No strong comparison yet.</strong><br>Keep logging sessions. We only show a comparison when both sides have enough examples.</div>'}</div>
-    <div class="notice"><strong>Next focus</strong><br>${recommendation(ss)}</div>`,'insights');
+    <div class="notice"><strong>What to focus on next</strong><br>${recommendation(ss)}</div>`,'insights');
 }
 function recommendation(ss){ if(ss.length<3)return 'Keep the routine consistent for a few sessions. The app will surface patterns once there is enough data.'; const c=corr(ss.map(x=>x.judgment),ss.map(x=>x.process)); if(c!==null&&c<-.25)return 'Try replacing self-criticism with one neutral observation after a difficult hand.'; const t=corr(ss.map(x=>x.tilt),ss.map(x=>x.process)); if(t!==null&&t<-.25)return 'Protect your process when tilt rises: use the hourly reset or end the session if you stop following your plan.'; return 'Keep one clear process goal per session and compare it with your post-session process score.'; }
 
-function profile(){
-  const rooms=knownRooms();
-  return appShell(`${header('More','Your games, rooms and local data.',false)}
-  <div class="stack">
-    ${xpPanel(true)}
-    <section class="card pad"><div class="row between section-head"><div><div class="section-title">Rooms</div><div class="session-meta">Saved automatically from your sessions.</div></div><span>${rooms.length}</span></div>${rooms.length?`<div class="room-list">${rooms.map(r=>`<span>${esc(r)}</span>`).join('')}</div>`:'<div class="empty">No rooms saved yet.</div>'}</section>
-    <section class="card pad"><div class="section-title">Games</div><div class="room-list">${knownGames().map(g=>`<span>${esc(g)}</span>`).join('')}</div></section>
-    <section class="card pad"><div class="section-title">Local-first data</div><p class="body-copy">No account and no server are required. Sessions, prep settings, rooms and insights are stored locally on this phone.</p></section>
-    <button class="btn secondary" id="exportData">Export my data</button>
-    <button class="btn secondary" id="seedDemo">Add demo sessions</button>
-    <button class="btn secondary danger-text" id="clearData">Clear all local data</button>
-  </div>`,'profile');
-}
+function profile(){ return appShell(`${header('More','Your game, your data, your progress.',false)}<div class="stack">${gamificationPanel()}<section class="card pad"><div class="section-title">Local-first data</div><p class="body-copy">No account and no server are required. Sessions, preparation settings, and insights are stored locally on this phone.</p></section><button class="btn secondary" id="exportData">Export my data</button><button class="btn secondary" id="seedDemo">Add demo sessions</button><button class="btn secondary danger-text" id="clearData">Clear all local data</button></div>`,'profile'); }
+
 function render(){ const app=document.getElementById('app'); app.innerHTML = ({home,prep:prepOverview,breathe,goals,handsIntro,handPlay,handExplain,handsComplete,review,active:activeSession,log:logSession,sessions,editSession,insights,profile}[route]||home)(); bind(); if(route==='active')startSessionTicker(); }
 function bind(){
   document.querySelectorAll('[data-nav]').forEach(el=>el.onclick=()=>navigate(el.dataset.nav));
@@ -604,10 +518,11 @@ function bind(){
   const toggle=document.getElementById('breathToggle'); if(toggle)toggle.onclick=()=>breathRunning?(stopBreath(),render()):startBreath();
   const reset=document.getElementById('breathReset'); if(reset)reset.onclick=resetBreath;
   const comp=document.querySelector('[data-complete-breath]'); if(comp)comp.onclick=()=>{stopBreath();state.prep.breathLevel=breathLevel;state.prep.breathWorkout=breathWorkout;save();navigate('goals')};
-  document.querySelectorAll('[data-goal-input]').forEach(el=>el.oninput=()=>{ const i=Number(el.dataset.goalInput); while(state.prep.goals.length<3)state.prep.goals.push(''); state.prep.goals[i]=el.value; const c=document.getElementById('goalCount'); if(c)c.textContent=`${state.prep.goals.filter(g=>String(g).trim()).length}/3`; save(); });
+  document.querySelectorAll('[data-goal-input]').forEach(el=>el.oninput=()=>{ const i=Number(el.dataset.goalInput); while(state.prep.goals.length<3)state.prep.goals.push(''); state.prep.goals[i]=el.value; save(); });
   document.querySelectorAll('[data-range]').forEach(el=>el.oninput=()=>{ const k=el.dataset.range, v=Number(el.value); if(['energy','focus','noise'].includes(k))state.prep[k]=v; const out=document.getElementById(`v-${k}`); if(out)out.textContent=v; save(); });
   document.querySelectorAll('[data-env]').forEach(el=>el.onclick=()=>{ const k=el.dataset.env; state.prep.environment[k]=!state.prep.environment[k]; save(); render(); });
   document.querySelectorAll('[data-prep-text]').forEach(el=>el.oninput=()=>{state.prep[el.dataset.prepText]=el.value;save();});
+  document.querySelectorAll('[data-room-input]').forEach(el=>{ const commit=()=>{const v=normalizeRoomName(el.value); if(v){el.value=v; rememberRoom(v); if(el.dataset.prepText)state.prep[el.dataset.prepText]=v; save();}}; el.addEventListener('change',commit); el.addEventListener('blur',commit); });
   document.querySelectorAll('[data-game-input]').forEach(el=>{
     const commit=()=>{const v=normalizeGameName(el.value); if(v){el.value=v; rememberGame(v); if(el.dataset.prepText)state.prep[el.dataset.prepText]=v; save();}};
     el.addEventListener('change',commit); el.addEventListener('blur',commit);
@@ -623,8 +538,7 @@ function bind(){
     const amount=Number(state.prep.sessionAmount);
     const err=document.getElementById('startError');
     if(!Number.isFinite(amount)||amount<=0){ if(err)err.textContent='Enter the amount you are starting the session with.'; document.querySelector('[data-prep-text="sessionAmount"]')?.focus(); return; }
-    const now=Date.now(), parts=toLocalParts(now);
-    rememberGame(state.prep.stakes); state.activeSession={startedAt:now,date:parts.date,startDate:parts.date,startTime:parts.time,stakes:normalizeGameName(state.prep.stakes),room:String(state.prep.room||'').trim(),startedAmount:amount,prep:structuredClone(state.prep)};
+    ensurePrepSchedule(); rememberGame(state.prep.stakes); rememberRoom(state.prep.room); state.activeSession={startedAt:Date.now(),date:localDateValue(),stakes:normalizeGameName(state.prep.stakes),room:normalizeRoomName(state.prep.room),startedAmount:amount,plannedStart:`${state.prep.startDate}T${state.prep.startTime}`,plannedEnd:`${state.prep.endDate}T${state.prep.endTime}`,prep:structuredClone(state.prep)};
     save(); scheduleBreakReminders(); navigate('active');
   };
   const finish=document.querySelector('[data-finish-session]'); if(finish)finish.onclick=()=>navigate('log');
@@ -632,10 +546,9 @@ function bind(){
     e.preventDefault(); const fd=new FormData(f), started=Number(fd.get('started')),finished=Number(fd.get('finished'));
     const process=Number(document.querySelector('[data-range="process"]')?.value||7), judgment=Number(document.querySelector('[data-range="judgment"]')?.value||4), tilt=Number(document.querySelector('[data-range="tilt"]')?.value||3), trust=Number(document.querySelector('[data-range="trust"]')?.value||7);
     const mental=state.activeSession?.prep; const scoreState = tilt>=8?'Tilted':(mental?.noise??5)<=3&&tilt<=4?'Calm':trust>=7?'Focused':'Tense';
-    const startAt=localDateTime(fd.get('startDate'),fd.get('startTime')), endAt=localDateTime(fd.get('endDate'),fd.get('endTime'));
-    if(!startAt||!endAt||endAt<startAt){alert('Please check the start and end date/time.');return;}
-    const durationMs=endAt-startAt;
-    rememberGame(fd.get('game')); state.sessions.push({id:crypto.randomUUID?.()||String(Date.now()),date:fd.get('startDate'),startDate:fd.get('startDate'),startTime:fd.get('startTime'),endDate:fd.get('endDate'),endTime:fd.get('endTime'),startedAt:startAt,endedAt:endAt,room:String(fd.get('room')||'').trim(),game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,state:scoreState,note:fd.get('note'),prep:mental||null,durationMs});
+    const durationMs=state.activeSession?Date.now()-state.activeSession.startedAt:null;
+    const startAt=parseLocalDateTime(fd.get('startAt')), endAt=parseLocalDateTime(fd.get('endAt')); if(!startAt||!endAt||endAt<startAt)return;
+    const room=normalizeRoomName(fd.get('room')); rememberGame(fd.get('game')); rememberRoom(room); state.sessions.push({id:crypto.randomUUID?.()||String(Date.now()),date:localDateValue(startAt),startAt,endAt,room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,state:scoreState,note:fd.get('note'),prep:mental||null,durationMs:endAt-startAt});
     state.activeSession=null; save(); cancelBreakReminders(); navigate('sessions');
   };
   const sound=document.getElementById('breathSound'); if(sound)sound.onclick=()=>{breathSoundEnabled=!breathSoundEnabled; if(breathSoundEnabled)ensureBreathAudio(); render();};
@@ -651,23 +564,16 @@ function bind(){
   const editForm=document.getElementById('editSessionForm'); if(editForm)editForm.onsubmit=e=>{
     e.preventDefault(); const item=state.sessions.find(x=>x.id===editingSessionId); if(!item)return navigate('sessions'); const fd=new FormData(editForm),started=Number(fd.get('started')),finished=Number(fd.get('finished'));
     const process=Number(document.querySelector('[data-range="edit-process"]')?.value||item.process),judgment=Number(document.querySelector('[data-range="edit-judgment"]')?.value||item.judgment),tilt=Number(document.querySelector('[data-range="edit-tilt"]')?.value||item.tilt),trust=Number(document.querySelector('[data-range="edit-trust"]')?.value||item.trust);
-    const startAt=localDateTime(fd.get('startDate'),fd.get('startTime')),endAt=localDateTime(fd.get('endDate'),fd.get('endTime'));
-    if(!startAt||!endAt||endAt<startAt){alert('Please check the start and end date/time.');return;}
-    rememberGame(fd.get('game')); Object.assign(item,{date:fd.get('startDate'),startDate:fd.get('startDate'),startTime:fd.get('startTime'),endDate:fd.get('endDate'),endTime:fd.get('endTime'),startedAt:startAt,endedAt:endAt,durationMs:endAt-startAt,room:String(fd.get('room')||'').trim(),game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,note:fd.get('note')}); item.state=tilt>=8?'Tilted':(item.prep?.noise??5)<=3&&tilt<=4?'Calm':trust>=7?'Focused':'Tense'; save(); editingSessionId=null; navigate('sessions');
+    const startAt=parseLocalDateTime(fd.get('startAt')), endAt=parseLocalDateTime(fd.get('endAt')); if(!startAt||!endAt||endAt<startAt)return; const room=normalizeRoomName(fd.get('room')); rememberGame(fd.get('game')); rememberRoom(room); Object.assign(item,{date:localDateValue(startAt),startAt,endAt,durationMs:endAt-startAt,room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,note:fd.get('note')}); item.state=tilt>=8?'Tilted':(item.prep?.noise??5)<=3&&tilt<=4?'Calm':trust>=7?'Focused':'Tense'; save(); editingSessionId=null; navigate('sessions');
   };
-  document.querySelectorAll('[data-money-range]').forEach(el=>el.onclick=()=>{moneyRange=el.dataset.moneyRange;selectedMoneyPoint=null;render();});
-  document.querySelectorAll('[data-money-mode]').forEach(el=>el.onclick=()=>{moneyMode=el.dataset.moneyMode;selectedMoneyPoint=null;render();});
-  document.querySelectorAll('[data-money-point]').forEach(el=>{const pick=()=>{selectedMoneyPoint=Number(el.dataset.moneyPoint);render();};el.onclick=pick;el.onfocus=pick;});
-  const moneyChart=document.getElementById('moneyChart'); if(moneyChart){
-    const pickNearest=e=>{const rect=moneyChart.getBoundingClientRect(),x=(e.touches?.[0]?.clientX??e.clientX)-rect.left,rows=filterMoneySessions();if(!rows.length)return;selectedMoneyPoint=Math.max(0,Math.min(rows.length-1,Math.round((x/Math.max(1,rect.width))*(rows.length-1))));render();};
-    moneyChart.onpointerdown=pickNearest; moneyChart.ontouchstart=pickNearest;
-  }
-  const moneyGameFilter=document.getElementById('moneyGameFilter'); if(moneyGameFilter)moneyGameFilter.onchange=()=>{moneyGame=moneyGameFilter.value;selectedMoneyPoint=null;render();};
+  document.querySelectorAll('[data-money-range]').forEach(el=>el.onclick=()=>{moneyRange=el.dataset.moneyRange;render();});
+  const moneyGameFilter=document.getElementById('moneyGameFilter'); if(moneyGameFilter)moneyGameFilter.onchange=()=>{moneyGame=moneyGameFilter.value;render();};
+  document.querySelectorAll('[data-money-point]').forEach(el=>{ el.onpointerenter=()=>showMoneyPoint(el.dataset.moneyPoint); el.onclick=()=>showMoneyPoint(el.dataset.moneyPoint); });
   const exp=document.getElementById('exportData'); if(exp)exp.onclick=()=>{const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='inner-game-data.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),500)};
   const seed=document.getElementById('seedDemo'); if(seed)seed.onclick=()=>{seedDemo();save();navigate('insights');};
   const clear=document.getElementById('clearData'); if(clear)clear.onclick=()=>{if(confirm('Delete all locally stored Inner Game data?')){cancelBreakReminders();localStorage.removeItem(STORAGE_KEY);LEGACY_STORAGE_KEYS.forEach(k=>localStorage.removeItem(k));location.reload();}};
 }
-function seedDemo(){ if(state.sessions.length)return; const rows=[[500,820,8,2,2,8,'Calm'],[500,340,5,7,8,4,'Tilted'],[500,620,7,3,4,7,'Focused'],[500,450,6,5,6,6,'Tense'],[500,760,9,2,2,9,'Calm'],[500,540,8,3,3,8,'Focused']]; rows.forEach((r,i)=>state.sessions.push({id:String(Date.now()+i),date:new Date(Date.now()-(rows.length-i)*86400000).toISOString().slice(0,10),game:'NL100',started:r[0],finished:r[1],pnl:r[1]-r[0],process:r[2],judgment:r[3],tilt:r[4],trust:r[5],state:r[6],note:'Demo session',durationMs:5400000})); }
+function seedDemo(){ if(state.sessions.length)return; const rows=[[500,820,8,2,2,8,'Calm'],[500,340,5,7,8,4,'Tilted'],[500,620,7,3,4,7,'Focused'],[500,450,6,5,6,6,'Tense'],[500,760,9,2,2,9,'Calm'],[500,540,8,3,3,8,'Focused']]; rows.forEach((r,i)=>state.sessions.push({id:String(Date.now()+i),date:localDateValue(Date.now()-(rows.length-i)*86400000),startAt:Date.now()-(rows.length-i)*86400000-5400000,endAt:Date.now()-(rows.length-i)*86400000,room:i%2?'GG Poker':'Live Casino',game:'NL100',started:r[0],finished:r[1],pnl:r[1]-r[0],process:r[2],judgment:r[3],tilt:r[4],trust:r[5],state:r[6],note:'Demo session',durationMs:5400000})); }
 
 save();
 render();
