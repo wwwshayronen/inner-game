@@ -116,3 +116,64 @@ input:focus,textarea:focus,select:focus{border-color:rgba(104,134,255,.75);box-s
 .money-chart-wrap{position:relative;min-height:205px;border-color:rgba(255,255,255,.07);background:linear-gradient(180deg,rgba(13,18,29,.85),rgba(7,10,15,.75));padding:9px}.money-chart{height:188px}.money-line{stroke:#42e7b2;stroke-width:3.2;filter:drop-shadow(0 0 7px rgba(66,231,178,.35));stroke-dasharray:900;stroke-dashoffset:900;animation:drawLine 1s ease forwards}.money-area{fill:url(#moneyFill);opacity:.8}.money-dot{fill:#67ffd0;stroke:#10221d;stroke-width:2}.money-hit{fill:transparent;cursor:pointer}.session-bar{opacity:.35}.session-bar.win{fill:#35e4ae}.session-bar.loss{fill:#ff5f67}.money-tooltip{position:absolute;z-index:4;left:50%;top:10px;transform:translateX(-50%);min-width:165px;padding:10px 12px;border-radius:15px;background:rgba(9,12,18,.95);border:1px solid rgba(255,255,255,.11);box-shadow:0 12px 30px rgba(0,0,0,.4);display:grid;gap:3px;pointer-events:none;text-align:center}.money-tooltip.hidden{display:none}.money-tooltip small,.money-tooltip span{font-size:11px;color:var(--muted)}.money-tooltip strong{font-size:21px}.money-total{text-align:right}.money-total strong,.money-total small{display:block}.money-total small{color:var(--muted);font-size:10px;margin-top:2px}.graph-fun-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.graph-fun-stats div{padding:10px 8px;border-radius:14px;background:rgba(255,255,255,.035);text-align:center}.graph-fun-stats small,.graph-fun-stats strong{display:block}.graph-fun-stats small{font-size:10px;color:var(--muted);margin-bottom:3px}.graph-fun-stats strong{font-size:15px}@keyframes drawLine{to{stroke-dashoffset:0}}
 .range-pills button.active{background:#718cff;color:white}.money-filters select{background-color:rgba(255,255,255,.045)}
 @media(max-width:460px){.achievement-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.date-time-grid{grid-template-columns:1fr 1fr}.home-hero h1{font-size:36px}}
+
+/* v1.7 approved Apple-inspired sharp UI */
+:root{
+  --bg:#050607;
+  --bg2:#080a0c;
+  --card:#101316;
+  --card2:#0c0f11;
+  --line:rgba(255,255,255,.075);
+  --text:#f5f5f7;
+  --muted:#8e8e93;
+  --accent:#35d98a;
+  --accent2:#35d98a;
+  --danger:#ff453a;
+  --radius:16px;
+  --page-pad:16px;
+  --surface-pad:16px;
+  --gap:12px;
+}
+html,body{background:#050607;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Inter,system-ui,sans-serif}
+body{letter-spacing:-.01em}
+.app-shell{background:linear-gradient(180deg,#050607 0%,#07090a 100%);max-width:720px;margin:0 auto;padding:calc(env(safe-area-inset-top) + 12px) var(--page-pad) calc(92px + env(safe-area-inset-bottom));min-height:100vh}
+.hero,.home-hero{background:none!important;border:0!important;box-shadow:none!important;padding:10px 2px 14px!important}
+.hero h1,.home-top h1{font-size:30px;line-height:1.04;letter-spacing:-.045em;font-weight:760;color:#f5f5f7}
+.subtitle,.body-copy,.session-meta,.hero p,.home-top p{color:var(--muted)}
+.accent,.positive{color:var(--accent)!important}
+.card,.apple-panel,.notice,.prep-item,.action-card{background:var(--card)!important;border:1px solid var(--line)!important;box-shadow:none!important}
+.btn.primary,.apple-cta,.goal-chip.selected,.range-pills button.active,.level.selected,.breath-workout.selected{background:var(--accent)!important;color:#03130b!important;border-color:transparent!important;box-shadow:none!important}
+.btn.secondary,.btn.ghost,.home-action.secondary{background:#121518!important;color:var(--text)!important;border:1px solid var(--line)!important}
+.btn,.action-card,.prep-item,.home-action{min-height:52px;font-weight:650;letter-spacing:-.01em}
+input,textarea,select{background:#0c0f11!important;color:var(--text)!important;border:1px solid var(--line)!important;box-shadow:none!important}
+input:focus,textarea:focus,select:focus{border-color:rgba(53,217,138,.65)!important;outline:none!important;box-shadow:0 0 0 3px rgba(53,217,138,.10)!important}
+.eyebrow,.kicker{color:#8e8e93!important;letter-spacing:.02em!important;font-weight:650!important}
+.mini-badge,.goal-count{background:rgba(53,217,138,.10)!important;color:var(--accent)!important;border-color:rgba(53,217,138,.18)!important}
+.breath-orb.hold .breath-fill,.breath-orb.rest .breath-fill{background:radial-gradient(circle at 38% 30%,rgba(93,230,166,.95),rgba(35,148,101,.92) 60%,rgba(14,71,48,.92))!important;box-shadow:0 0 55px rgba(53,217,138,.16)!important}
+.hold-dot,.rest-dot,.inhale-dot,.exhale-dot{background:var(--accent)!important}
+.level-orb{background:#15191c!important;color:var(--text)!important;border:1px solid var(--line)!important}
+.xp-track{background:#1b1f22!important}.xp-track i{background:var(--accent)!important}
+.achievement{background:#0f1214!important;border-color:var(--line)!important}.achievement.on{border-color:rgba(53,217,138,.28)!important}.achievement.on .achievement-icon{color:var(--accent)!important}
+.money-line{stroke:var(--accent)!important}.money-chart circle{fill:var(--accent)!important}
+.range-pills button{background:#0d1012!important}.range-pills button.active{color:#03130b!important}
+.tabs.apple-tabs{position:fixed;z-index:80;left:50%;bottom:0;transform:translateX(-50%);width:min(720px,100%);height:calc(70px + env(safe-area-inset-bottom));padding:7px 10px env(safe-area-inset-bottom);display:grid;grid-template-columns:1fr 1fr 66px 1fr 1fr;align-items:start;background:rgba(7,9,10,.94);backdrop-filter:saturate(180%) blur(22px);border-top:1px solid var(--line);box-shadow:none}
+.apple-tabs .tab{background:none!important;border:0!important;color:#656a6e!important;min-width:0;height:52px;padding:2px 0;display:flex;flex-direction:column;gap:2px;align-items:center;justify-content:center;font-size:10px;font-weight:600}
+.apple-tabs .tab.active{color:#f5f5f7!important}
+.apple-tabs .ti{font-size:19px;line-height:20px;font-weight:600}
+.tab-create{align-self:start;justify-self:center;width:50px;height:50px;border-radius:50%;border:0;background:var(--accent);color:#03130b;display:grid;place-items:center;font-size:31px;font-weight:350;line-height:1;box-shadow:0 6px 18px rgba(0,0,0,.28)}
+.home-top{padding:18px 2px 10px}.home-top small{display:block;color:#c7c7cc;font-size:15px}.home-top h1{margin:2px 0 6px}.home-top p{margin:0;font-size:14px}
+.apple-stack{gap:12px}.apple-panel{border-radius:16px;padding:16px}
+.bankroll-home{padding-bottom:14px}.panel-head{display:flex;align-items:flex-start;justify-content:space-between}.kicker{display:block;font-size:13px;margin-bottom:5px}.hero-money{font-size:30px;line-height:1.05;font-weight:760;letter-spacing:-.04em}.period-pill{background:#181b1e;border:1px solid var(--line);border-radius:999px;color:#d1d1d6;padding:5px 9px;font-size:11px}
+.home-spark{display:block;width:100%;height:92px;margin:8px 0 4px;overflow:visible}.home-spark polyline{fill:none;stroke:var(--accent);stroke-width:1.9;vector-effect:non-scaling-stroke;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 4px 8px rgba(53,217,138,.12))}
+.home-week{border-top:1px solid var(--line);padding-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.home-week span,.home-week small{display:block;color:var(--muted);font-size:10px}.home-week strong{display:block;font-size:17px;margin:2px 0}
+.home-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.home-action{border-radius:15px;padding:13px;border:1px solid var(--line);display:flex;gap:10px;align-items:center;text-align:left}.home-action.primary{background:var(--accent);color:#03130b;border-color:transparent}.home-action.secondary{background:#101316}.home-action strong,.home-action small{display:block}.home-action strong{font-size:14px}.home-action small{margin-top:2px;font-size:10px;opacity:.7}.action-symbol{font-size:21px;width:24px;text-align:center}
+.streak-panel{padding:14px 16px}.streak-main{display:grid;grid-template-columns:36px 1fr auto;align-items:center;gap:10px}.streak-icon{font-size:24px}.streak-main strong,.streak-main small{display:block}.streak-main strong{font-size:14px}.streak-main small{color:var(--muted);font-size:11px;margin-top:2px}.streak-days{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:12px}.streak-days span{height:27px;border-radius:50%;display:grid;place-items:center;background:#171a1d;color:#74777a;font-size:9px;font-weight:700}.streak-days span.done{background:rgba(53,217,138,.14);color:var(--accent);box-shadow:inset 0 0 0 1px rgba(53,217,138,.22)}
+.focus-row{width:100%;display:grid;grid-template-columns:36px 1fr auto;gap:10px;align-items:center;text-align:left;color:var(--text)}.focus-row small,.focus-row strong{display:block}.focus-row small{color:var(--muted);font-size:10px}.focus-row strong{font-size:14px;margin-top:2px}.focus-dot{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:rgba(53,217,138,.12);color:var(--accent);font-size:18px}
+.compact-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.compact-stats div{min-width:0}.compact-stats strong,.compact-stats span{display:block}.compact-stats strong{font-size:18px}.compact-stats span{color:var(--muted);font-size:10px;margin-top:3px}
+.section-title{font-weight:700;letter-spacing:-.025em}
+.topbar .back{background:#14171a!important;border:1px solid var(--line)!important;color:#f5f5f7!important;box-shadow:none!important}
+.progress-card,.game-plan-card,.hand-intro-card{box-shadow:none!important}
+.gg-felt{border-color:#202522!important;background:radial-gradient(circle at 50% 40%,#174b38 0,#103c2e 52%,#0b281f 100%)!important;box-shadow:inset 0 0 0 1px rgba(53,217,138,.16)!important}
+.gg-seat.hero{border-color:rgba(53,217,138,.75)!important;color:var(--accent)!important}
+.sound-toggle.on{color:var(--accent)!important;border-color:rgba(53,217,138,.24)!important;background:rgba(53,217,138,.08)!important}
+@media(max-width:420px){.home-actions{grid-template-columns:1fr 1fr}.home-action{padding:11px 10px}.home-action strong{font-size:13px}.home-action small{font-size:9px}}
