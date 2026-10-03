@@ -130,37 +130,51 @@ function gamificationStats(){
 function avg(a){ return a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0; }
 function corr(xs,ys){ if(xs.length<3||xs.length!==ys.length)return null; const mx=avg(xs),my=avg(ys); let n=0,dx=0,dy=0; xs.forEach((x,i)=>{const a=x-mx,b=ys[i]-my;n+=a*b;dx+=a*a;dy+=b*b}); return dx&&dy?n/Math.sqrt(dx*dy):null; }
 function navigate(to){ route=to; stopBreath(); stopSessionTicker(); render(); window.scrollTo({top:0,behavior:'instant'}); }
-function tabs(active){ return `<nav class="tabs">${[['home','⌂','Home'],['sessions','▤','Sessions'],['insights','▥','Insights'],['profile','◎','Profile']].map(([r,i,l])=>`<button class="tab ${active===r?'active':''}" data-nav="${r}"><span class="ti">${i}</span><span>${l}</span></button>`).join('')}</nav>`; }
-function header(title,sub,back=true){ return `<div class="hero"><div class="topbar">${back?'<button class="back" data-back aria-label="Back">‹</button>':''}<div class="hero-copy"><h1>${title}</h1><p class="subtitle">${sub}</p></div></div></div>`; }
-function stepper(active){ const labels=['Breathe','Goals','3 Hands','Plan']; return `<div class="stepper four">${labels.map((l,i)=>`<div class="step ${i<active?'done':''} ${i===active?'active':''}"><div class="bubble">${i+1}</div><span>${l}</span></div>`).join('')}</div>`; }
-function appShell(content,tab='home'){ return `<main class="app-shell">${content}${tabs(tab)}</main>`; }
-function formatDuration(ms){ const total=Math.max(0,Math.floor(ms/1000)); const h=Math.floor(total/3600), m=Math.floor((total%3600)/60), s=total%60; return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
-function nativeCall(name, payload={}){
-  try {
-    if (window.InnerGameNative && typeof window.InnerGameNative[name] === 'function') { window.InnerGameNative[name](JSON.stringify(payload)); return; }
-    if (window.webkit?.messageHandlers?.innerGame) window.webkit.messageHandlers.innerGame.postMessage({action:name,...payload});
-  } catch {}
+function tabs(active){
+  const items=[
+    ['home','⌂','Home'],
+    ['sessions','◷','Sessions'],
+    ['insights','▦','Stats'],
+    ['profile','≡','More']
+  ];
+  const left=items.slice(0,2).map(([r,i,l])=>'<button class="tab '+(active===r?'active':'')+'" data-nav="'+r+'"><span class="ti">'+i+'</span><span>'+l+'</span></button>').join('');
+  const right=items.slice(2).map(([r,i,l])=>'<button class="tab '+(active===r?'active':'')+'" data-nav="'+r+'"><span class="ti">'+i+'</span><span>'+l+'</span></button>').join('');
+  return '<nav class="tabs apple-tabs">'+left+'<button class="tab-create" data-start-prep aria-label="Start session"><span>+</span></button>'+right+'</nav>';
 }
 function scheduleBreakReminders(){ if(!state.activeSession)return; nativeCall('scheduleBreakReminders',{startedAt:state.activeSession.startedAt, intervalMinutes:60, breakMinutes:5}); }
 function cancelBreakReminders(){ nativeCall('cancelBreakReminders'); }
 
 function home(){
-  const s=state.sessions, pnl=s.reduce((a,x)=>a+x.pnl,0), ps=avg(s.map(x=>x.process||0)), g=gamificationStats();
-  const monthSessions=s.filter(x=>{const d=new Date(`${x.date||localDateValue()}T00:00:00`),n=new Date();return d.getMonth()===n.getMonth()&&d.getFullYear()===n.getFullYear();});
+  const s=state.sessions, pnl=s.reduce((a,x)=>a+(Number(x.pnl)||0),0), ps=avg(s.map(x=>x.process||0)), g=gamificationStats();
+  const now=new Date(), monthSessions=s.filter(x=>{const d=new Date((x.date||localDateValue())+'T00:00:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();});
   const monthPnl=monthSessions.reduce((a,x)=>a+(Number(x.pnl)||0),0);
-  return appShell(`
-    <div class="hero home-hero"><div class="eyebrow">INNER GAME</div><h1>Play a better <span class="accent">you.</span></h1><p class="subtitle">Prepare deliberately. Play focused. Review without judgment.</p></div>
-    <div class="stack">
-      <section class="card pad apple-hero-card">
-        <div class="row between"><div><small class="eyebrow">THIS MONTH</small><div class="hero-money ${monthPnl>=0?'positive':'negative'}">${money(monthPnl)}</div></div><div class="level-orb">L${g.level}</div></div>
-        <div class="xp-track"><i style="width:${Math.max(5,g.progress*100)}%"></i></div>
-        <div class="row between session-meta"><span>${g.xp.toLocaleString()} XP · Level ${g.level}</span><span>${500-g.inLevel} XP to next</span></div>
-        <div class="home-kpis"><div><strong>${s.length}</strong><span>Sessions</span></div><div><strong>${ps?ps.toFixed(1):'—'}</strong><span>Avg process</span></div><div><strong>${g.aStreak}</strong><span>A-game streak</span></div></div>
-      </section>
-      ${state.activeSession?`<button class="action-card primary apple-cta" data-nav="active"><span class="icon">◷</span><span><div class="action-title">Resume Session</div><div class="action-sub">Timer, room and next break</div></span><span class="chev">›</span></button>`:`<button class="action-card primary apple-cta" data-start-prep><span class="icon">＋</span><span><div class="action-title">New Session</div><div class="action-sub">Prep your mind and game plan</div></span><span class="chev">›</span></button>`}
-      <section class="card pad focus-card"><div class="row between"><div><small class="eyebrow">TODAY'S FOCUS</small><div class="section-title compact-title">Process over results</div></div><div class="focus-icon">◎</div></div><p class="body-copy">One clean decision at a time. Let the result be feedback, not a verdict.</p></section>
-      <button class="action-card" data-nav="log"><span class="icon">✎</span><span><div class="action-title">Log Past Session</div><div class="action-sub">Add a session you already played</div></span><span class="chev">›</span></button>
-    </div>`, 'home');
+  const weekAgo=Date.now()-7*86400000, weekSessions=s.filter(x=>{const t=parseLocalDateTime((x.startDate||x.date||localDateValue())+'T'+(x.startTime||'00:00'));return t&&t>=weekAgo;});
+  const weekPnl=weekSessions.reduce((a,x)=>a+(Number(x.pnl)||0),0);
+  const weekMs=weekSessions.reduce((a,x)=>a+(Number(x.durationMs)||0),0);
+  const points=monthSessions.slice().sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
+  let cum=0; const vals=[0]; points.forEach(x=>{cum+=Number(x.pnl)||0;vals.push(cum);});
+  const min=Math.min(...vals), max=Math.max(...vals), span=(max-min)||1;
+  const coords=vals.map((v,i)=>((i/(Math.max(1,vals.length-1)))*100).toFixed(1)+','+(52-((v-min)/span)*44).toFixed(1)).join(' ');
+  const greeting=(new Date().getHours()<12?'Good morning':new Date().getHours()<18?'Good afternoon':'Good evening');
+  const content=
+    '<div class="home-top"><small>'+greeting+',</small><h1>Shay</h1><p>Play focused. Progress compounds.</p></div>'+
+    '<div class="stack apple-stack">'+
+      '<section class="apple-panel bankroll-home">'+
+        '<div class="panel-head"><div><span class="kicker">Bankroll</span><div class="hero-money '+(monthPnl>=0?'positive':'negative')+'">'+money(monthPnl)+'</div></div><span class="period-pill">1M</span></div>'+
+        '<svg class="home-spark" viewBox="0 0 100 56" preserveAspectRatio="none" aria-hidden="true"><polyline points="'+coords+'"></polyline></svg>'+
+        '<div class="home-week"><div><span>This Week</span><strong>'+weekSessions.length+'</strong><small>Sessions</small></div><div><span>&nbsp;</span><strong>'+Math.round(weekMs/3600000)+'h</strong><small>Play time</small></div><div><span>&nbsp;</span><strong class="'+(weekPnl>=0?'positive':'negative')+'">'+money(weekPnl)+'</strong><small>Net result</small></div></div>'+
+      '</section>'+
+      '<div class="home-actions">'+
+        (state.activeSession?
+          '<button class="home-action primary" data-nav="active"><span class="action-symbol">▶</span><div><strong>Resume Session</strong><small>Continue live tracking</small></div></button>':
+          '<button class="home-action primary" data-start-prep><span class="action-symbol">＋</span><div><strong>Start Session</strong><small>Prepare, then play</small></div></button>')+
+        '<button class="home-action secondary" data-nav="log"><span class="action-symbol">✎</span><div><strong>Log Session</strong><small>Add a finished session</small></div></button>'+
+      '</div>'+
+      '<section class="apple-panel streak-panel"><div class="streak-main"><span class="streak-icon">🔥</span><div><strong>'+g.aStreak+' session streak</strong><small>Strong process score</small></div><span class="chev">›</span></div><div class="streak-days">'+[0,1,2,3,4,5,6].map((d,i)=>'<span class="'+(i<Math.min(g.aStreak,7)?'done':'')+'">'+['M','T','W','T','F','S','S'][i]+'</span>').join('')+'</div></section>'+
+      '<button class="apple-panel focus-row" data-nav="goals"><span class="focus-dot">◎</span><div><small>Today’s Focus</small><strong>Process over results</strong></div><span class="chev">›</span></button>'+
+      '<section class="apple-panel compact-stats"><div><strong>'+s.length+'</strong><span>Sessions</span></div><div><strong>'+(ps?ps.toFixed(1):'—')+'</strong><span>Avg process</span></div><div><strong>'+g.level+'</strong><span>Level</span></div></section>'+
+    '</div>';
+  return appShell(content,'home');
 }
 function bestStateLabel(){ if(!state.sessions.length)return '—'; const buckets={Calm:[],Focused:[],Tense:[],Tilted:[]}; state.sessions.forEach(s=>{(buckets[s.state]??=[]).push(s.process||0)}); return Object.entries(buckets).sort((a,b)=>avg(b[1])-avg(a[1]))[0]?.[0]||'—'; }
 
