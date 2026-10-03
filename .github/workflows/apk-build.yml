@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'android/**'
+      - 'icon.b64'
       - '.github/workflows/apk-build.yml'
 
 permissions:
@@ -19,39 +20,27 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Restore stable test signing key
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: inner-game-debug-keystore-v1
-
-      - name: Ensure stable test signing key
-        shell: bash
-        run: |
-          mkdir -p ~/.android
-          if [ ! -f ~/.android/debug.keystore ]; then
-            keytool -genkeypair               -keystore ~/.android/debug.keystore               -storepass android               -alias androiddebugkey               -keypass android               -dname "CN=Inner Game Test,O=Inner Game,C=IL"               -keyalg RSA               -keysize 2048               -validity 10000
-          fi
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-
+      - name: Generate launcher icon resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p android/app/src/main/res/mipmap-xxxhdpi
+          base64 --decode icon.b64 > android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          cp android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
       - name: Build APK
         run: gradle -p android --no-daemon assembleDebug
-
-      - name: Prepare artifact
+      - name: Prepare APK
         run: cp android/app/build/outputs/apk/debug/app-debug.apk InnerGame-v1.6-Android.apk
-
       - uses: actions/upload-artifact@v4
         with:
-          name: InnerGame-v1.6-Android
+          name: InnerGame-v1.6-Android-APK
           path: InnerGame-v1.6-Android.apk
           if-no-files-found: error
           retention-days: 30
