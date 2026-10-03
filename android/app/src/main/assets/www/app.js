@@ -141,6 +141,17 @@ function tabs(active){
   const right=items.slice(2).map(([r,i,l])=>'<button class="tab '+(active===r?'active':'')+'" data-nav="'+r+'"><span class="ti">'+i+'</span><span>'+l+'</span></button>').join('');
   return '<nav class="tabs apple-tabs">'+left+'<button class="tab-create" data-start-prep aria-label="Start session"><span>+</span></button>'+right+'</nav>';
 }
+function header(title,sub,back=true){ return `<div class="hero"><div class="topbar">${back?'<button class="back" data-back aria-label="Back">‹</button>':''}<div class="hero-copy"><h1>${title}</h1><p class="subtitle">${sub}</p></div></div></div>`; }
+function stepper(active){ const labels=['Breathe','Goals','3 Hands','Plan']; return `<div class="stepper four">${labels.map((l,i)=>`<div class="step ${i<active?'done':''} ${i===active?'active':''}"><div class="bubble">${i+1}</div><span>${l}</span></div>`).join('')}</div>`; }
+function appShell(content,tab='home'){ return `<main class="app-shell">${content}${tabs(tab)}</main>`; }
+function formatDuration(ms){ const total=Math.max(0,Math.floor((Number(ms)||0)/1000)); const h=Math.floor(total/3600), m=Math.floor((total%3600)/60), s=total%60; return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
+function nativeCall(name,payload={}){
+  try{
+    if(window.InnerGameNative&&typeof window.InnerGameNative[name]==='function'){ window.InnerGameNative[name](JSON.stringify(payload)); return; }
+    if(window.webkit?.messageHandlers?.innerGame) window.webkit.messageHandlers.innerGame.postMessage({action:name,...payload});
+  }catch{}
+}
+
 function scheduleBreakReminders(){ if(!state.activeSession)return; nativeCall('scheduleBreakReminders',{startedAt:state.activeSession.startedAt, intervalMinutes:60, breakMinutes:5}); }
 function cancelBreakReminders(){ nativeCall('cancelBreakReminders'); }
 
