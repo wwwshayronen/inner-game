@@ -1,0 +1,93 @@
+const STORAGE_KEY = 'innerGame.v5';
+const LEGACY_STORAGE_KEYS = ['innerGame.v4','innerGame.v3','innerGame.v2','innerGame.v1'];
+const GOALS = ['Stay patient','No results checking','Mark tough spots','Take 3 breaths after big pots','Stick to bankroll','Quit if tilted'];
+const defaults = {
+  sessions: [],
+  games:['NL100'],
+  prep: {
+    breathLevel:'beginner', breathWorkout:'focus', goals:['Stay patient','Mark tough spots'], energy:6, focus:7, noise:3,
+    environment:{silent:true, distractions:true, water:true}, leak:'', reminder:'', stakes:'NL100',
+    stopLoss:'3 buy-ins', length:'90 min', sessionAmount:'',
+    handWarmup:{selectedIds:[],answers:{},currentIndex:0,completed:false,skipped:false}
+  },
+  activeSession: null
+};
+const state = load();
+let route = state.activeSession ? 'active' : 'home';
+let breathTimer = null;
+let breathRemaining = (({beginner:3,intermediate:10,advanced:20})[state.prep.breathLevel]||3)*60;
+let breathRunning = false;
+let breathLevel = state.prep.breathLevel || 'beginner';
+let sessionTicker = null;
+let editingSessionId = null;
+let breathSoundEnabled = true;
+let breathEndAt = 0;
+let breathAudio = null;
+let breathLastPhase = -1;
+let breathWorkout = state.prep.breathWorkout || 'focus';
+let pendingDeleteSessionId = null;
+let moneyRange = 'all';
+let moneyGame = 'all';
+const BREATH_WORKOUTS = {
+  focus:{name:'Focus',short:'Box breathing',description:'Steady attention before you play.',phases:[
+    {name:'Inhale',duration:4,cls:'inhale',cue:'Breathe in through your nose',fill:'up'},
+    {name:'Hold',duration:4,cls:'hold',cue:'Hold gently — no strain',fill:'full'},
+    {name:'Exhale',duration:4,cls:'exhale',cue:'Breathe out slowly',fill:'down'},
+    {name:'Hold',duration:4,cls:'rest',cue:'Pause before the next breath',fill:'empty'}
+  ]},
+  relax:{name:'Relax',short:'4-7-8',description:'Long exhale to settle down.',phases:[
+    {name:'Inhale',duration:4,cls:'inhale',cue:'Inhale softly through your nose',fill:'up'},
+    {name:'Hold',duration:7,cls:'hold',cue:'Hold gently — stay relaxed',fill:'full'},
+    {name:'Exhale',duration:8,cls:'exhale',cue:'Slow, complete exhale',fill:'down'}
+  ]},
+  balance:{name:'Balance',short:'Coherent breathing',description:'Even rhythm for a calm, steady state.',phases:[
+    {name:'Inhale',duration:5,cls:'inhale',cue:'Smooth inhale',fill:'up'},
+    {name:'Exhale',duration:5,cls:'exhale',cue:'Smooth exhale',fill:'down'}
+  ]},
+  nostril:{name:'Reset',short:'Alternate nostril',description:'A deliberate left-right breathing reset.',phases:[
+    {name:'Left In',duration:4,cls:'inhale',cue:'Close right nostril · inhale left',fill:'up'},
+    {name:'Hold',duration:2,cls:'hold',cue:'Close both gently',fill:'full'},
+    {name:'Right Out',duration:4,cls:'exhale',cue:'Open right · exhale',fill:'down'},
+    {name:'Right In',duration:4,cls:'inhale',cue:'Inhale through the right nostril',fill:'up'},
+    {name:'Hold',duration:2,cls:'hold',cue:'Close both gently',fill:'full'},
+    {name:'Left Out',duration:4,cls:'exhale',cue:'Open left · exhale',fill:'down'}
+  ]}
+};
+
+function deepMerge(base, incoming){
+  if (!incoming || typeof incoming !== 'object') return structuredClone(base);
+  const out = structuredClone(base);
+  Object.keys(incoming).forEach(k => {
+    if (incoming[k] && typeof incoming[k] === 'object' && !Array.isArray(incoming[k]) && out[k] && typeof out[k] === 'object' && !Array.isArray(out[k])) out[k] = deepMerge(out[k], incoming[k]);
+    else out[k] = incoming[k];
+  });
+  return out;
+}
+function load(){
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY) || LEGACY_STORAGE_KEYS.map(k=>localStorage.getItem(k)).find(Boolean);
+    return raw ? deepMerge(defaults, JSON.parse(raw)) : structuredClone(defaults);
+  } catch { return structuredClone(defaults); }
+}
+function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function esc(v=''){ return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function money(v){ const n=Number(v)||0; const sign=n>0?'+':n<0?'-':''; return `${sign}$${Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:0})}`; }
+function normalizeGameName(v=''){ return String(v).trim().replace(/\s+/g,' '); }
+function knownGames(){
+  const fromSessions=state.sessions.map(s=>normalizeGameName(s.game)).filter(Boolean);
+  const fromState=(state.games||[]).map(normalizeGameName).filter(Boolean);
+  return [...new Set([...fromState,...fromSessions])].sort((a,b)=>a.localeCompare(b));
+}
+function rememberGame(v){
+  const game=normalizeGameName(v); if(!game)return;
+  state.games=knownGames();
+  if(!state.games.some(x=>x.toLowerCase()===game.toLowerCase())) state.games.push(game);
+  state.games.sort((a,b)=>a.localeCompare(b)); save();
+}
+function gameOptionsHTML(){ return knownGames().map(g=>`<option value="${esc(g)}"></option>`).join(''); }
+function avg(a){ return a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0; }
+function corr(xs,ys){ if(xs.length<3||xs.length!==ys.length)return null; const mx=avg(xs),my=avg(ys); let n=0,dx=0,dy=0; xs.forEach((x,i)=>{const a=x-mx,b=ys[i]-my;n+=a*b;dx+=a*a;dy+=b*b}); return dx&&dy?n/Math.sqrt(dx*dy):null; }
+function navigate(to){ route=to; stopBreath(); stopSessionTicker(); render(); window.scrollTo({top:0,behavior:'instant'}); }
+function tabs(active){ return `<nav class="tabs">${[['home','⌂','Home'],['sessions','▤','Sessions'],['insights','▥','Insights'],['profile','◎','Profile']].map(([r,i,l])=>`<button class="tab ${active===r?'active':''}" data-nav="${r}"><span class="ti">${i}</span><span>${l}</span></button>`).join('')}</nav>`; }
+function header(title,sub,back=true){ return `<div class="hero"><div class="topbar">${back?'<button class="back" data-back aria-label="Back">‹</button>':''}<div class="hero-copy"><h1>${title}</h1><p class="subtitle">${sub}</p></div></div></div>`; }
+function stepper(active){ const labels=['Breathe','Goals','3 Hands','Plan']; return `<div class="stepper four">${labels.map((l,i)=>`<div class="step ${i<active?'done
