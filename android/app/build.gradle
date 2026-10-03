@@ -9,7 +9,7 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.innergame.app'
+        applicationId 'com.innergame.app.v15'
         minSdk 26
         targetSdk 35
         versionCode 6
