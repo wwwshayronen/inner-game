@@ -27,7 +27,7 @@ let breathAudio = null;
 let breathLastPhase = -1;
 let breathWorkout = state.prep.breathWorkout || 'focus';
 let pendingDeleteSessionId = null;
-let moneyRange = 'all';
+let moneyRange = '30';
 let moneyGame = 'all';
 const BREATH_WORKOUTS = {
   focus:{name:'Focus',short:'Box breathing',description:'Steady attention before you play.',phases:[
@@ -134,12 +134,16 @@ function tabs(active){
   const items=[
     ['home','⌂','Home'],
     ['sessions','◷','Sessions'],
-    ['insights','▦','Stats'],
+    ['insights','▥','Stats'],
     ['profile','≡','More']
   ];
   const left=items.slice(0,2).map(([r,i,l])=>'<button class="tab '+(active===r?'active':'')+'" data-nav="'+r+'"><span class="ti">'+i+'</span><span>'+l+'</span></button>').join('');
   const right=items.slice(2).map(([r,i,l])=>'<button class="tab '+(active===r?'active':'')+'" data-nav="'+r+'"><span class="ti">'+i+'</span><span>'+l+'</span></button>').join('');
-  return '<nav class="tabs apple-tabs">'+left+'<button class="tab-create" data-start-prep aria-label="Start session"><span>+</span></button>'+right+'</nav>';
+  const center=state.activeSession
+    ? '<button class="tab-create stop" data-finish-session aria-label="End session"><span class="stop-square"></span></button>'
+    : '<button class="tab-create play" data-start-prep aria-label="Start session"><span class="play-triangle"></span></button>';
+  const running=state.activeSession?'<div class="nav-running"><span></span>Session running · <b id="navElapsed">'+formatDuration(Date.now()-state.activeSession.startedAt)+'</b></div>':'';
+  return running+'<nav class="tabs apple-tabs">'+left+center+right+'</nav>';
 }
 function header(title,sub,back=true){ return `<div class="hero"><div class="topbar">${back?'<button class="back" data-back aria-label="Back">‹</button>':''}<div class="hero-copy"><h1>${title}</h1><p class="subtitle">${sub}</p></div></div></div>`; }
 function stepper(active){ const labels=['Breathe','Goals','3 Hands','Plan']; return `<div class="stepper four">${labels.map((l,i)=>`<div class="step ${i<active?'done':''} ${i===active?'active':''}"><div class="bubble">${i+1}</div><span>${l}</span></div>`).join('')}</div>`; }
@@ -155,37 +159,49 @@ function nativeCall(name,payload={}){
 function scheduleBreakReminders(){ if(!state.activeSession)return; nativeCall('scheduleBreakReminders',{startedAt:state.activeSession.startedAt, intervalMinutes:60, breakMinutes:5}); }
 function cancelBreakReminders(){ nativeCall('cancelBreakReminders'); }
 
+function homeMoneyCard(){
+  const rows=filterMoneySessions(), cumulative=[0]; let total=0;
+  rows.forEach(s=>{total+=Number(s.pnl)||0;cumulative.push(total);});
+  const values=cumulative.length>1?cumulative:[0,0], min=Math.min(...values,0), max=Math.max(...values,0), span=Math.max(1,max-min);
+  const W=360,H=150,P=12;
+  const pts=values.map((v,i)=>{const x=P+(i/(values.length-1||1))*(W-P*2);const y=P+((max-v)/span)*(H-P*2);return [x,y];});
+  const path=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  const area=path+' L '+pts.at(-1)[0]+','+(H-P)+' L '+pts[0][0]+','+(H-P)+' Z';
+  const dots=rows.map((s,i)=>{const p=pts[i+1];return '<circle class="home-money-dot" cx="'+p[0]+'" cy="'+p[1]+'" r="4"/><circle class="home-money-hit" data-money-point="'+i+'" cx="'+p[0]+'" cy="'+p[1]+'" r="16"/>';}).join('');
+  const ranges=[['7','1W'],['30','1M'],['90','3M'],['365','1Y'],['all','All']];
+  const weekAgo=Date.now()-7*86400000;
+  const weekRows=state.sessions.filter(s=>{const t=s.startAt||parseLocalDateTime((s.date||localDateValue())+'T00:00');return t&&t>=weekAgo;});
+  const weekPnl=weekRows.reduce((a,s)=>a+(Number(s.pnl)||0),0);
+  const weekMs=weekRows.reduce((a,s)=>a+(Number(s.durationMs)||0),0);
+  return '<section class="apple-panel home-money-card">'+
+    '<div class="home-money-head"><div><span>Net P/L</span><strong class="'+(total>=0?'positive':'negative')+'">'+money(total)+'</strong></div><span class="period-pill">'+(moneyRange==='7'?'1W':moneyRange==='30'?'1M':moneyRange==='90'?'3M':moneyRange==='365'?'1Y':'All')+'</span></div>'+
+    '<div class="home-money-chart">'+
+      (rows.length?'<div id="moneyTooltip" class="money-tooltip hidden"></div><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none"><defs><linearGradient id="homeMoneyFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#35d98a" stop-opacity=".26"/><stop offset="100%" stop-color="#35d98a" stop-opacity="0"/></linearGradient></defs><path class="home-money-area" d="'+area+'"/><path class="home-money-line" d="'+path+'"/>'+dots+'</svg>':'<div class="empty graph-empty">Log a session to start your graph.</div>')+
+    '</div>'+
+    '<div class="home-money-ranges">'+ranges.map(([v,l])=>'<button class="'+(moneyRange===v?'active':'')+'" data-money-range="'+v+'">'+l+'</button>').join('')+'</div>'+
+    '<div class="home-money-kpis"><div><strong>'+weekRows.length+'</strong><span>Sessions</span></div><div><strong>'+Math.round(weekMs/3600000)+'h</strong><span>Play time</span></div><div><strong class="'+(weekPnl>=0?'positive':'negative')+'">'+money(weekPnl)+'</strong><span>This week</span></div></div>'+
+  '</section>';
+}
+
 function home(){
-  const s=state.sessions, pnl=s.reduce((a,x)=>a+(Number(x.pnl)||0),0), ps=avg(s.map(x=>x.process||0)), g=gamificationStats();
-  const now=new Date(), monthSessions=s.filter(x=>{const d=new Date((x.date||localDateValue())+'T00:00:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();});
-  const monthPnl=monthSessions.reduce((a,x)=>a+(Number(x.pnl)||0),0);
-  const weekAgo=Date.now()-7*86400000, weekSessions=s.filter(x=>{const t=parseLocalDateTime((x.startDate||x.date||localDateValue())+'T'+(x.startTime||'00:00'));return t&&t>=weekAgo;});
-  const weekPnl=weekSessions.reduce((a,x)=>a+(Number(x.pnl)||0),0);
-  const weekMs=weekSessions.reduce((a,x)=>a+(Number(x.durationMs)||0),0);
-  const points=monthSessions.slice().sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
-  let cum=0; const vals=[0]; points.forEach(x=>{cum+=Number(x.pnl)||0;vals.push(cum);});
-  const min=Math.min(...vals), max=Math.max(...vals), span=(max-min)||1;
-  const coords=vals.map((v,i)=>((i/(Math.max(1,vals.length-1)))*100).toFixed(1)+','+(52-((v-min)/span)*44).toFixed(1)).join(' ');
+  const g=gamificationStats();
   const greeting=(new Date().getHours()<12?'Good morning':new Date().getHours()<18?'Good afternoon':'Good evening');
-  const content=
-    '<div class="home-top"><small>'+greeting+',</small><h1>Shay</h1><p>Play focused. Progress compounds.</p></div>'+
+  const actionPrimary=state.activeSession
+    ? '<button class="home-action primary" data-nav="active"><span class="action-symbol play-mini"></span><div><strong>Resume Session</strong><small>Return to live session</small></div></button>'
+    : '<button class="home-action primary" data-start-prep><span class="action-symbol play-mini"></span><div><strong>Start Session</strong><small>Prepare, then play</small></div></button>';
+  const dots=[0,1,2,3,4,5,6].map((_,i)=>'<span class="'+(i<Math.min(g.aStreak,7)?'done':'')+'"></span>').join('');
+  return appShell(
+    '<div class="home-top"><button class="home-settings" data-nav="profile" aria-label="Settings">⚙</button><small>'+greeting+',</small><h1>Shay</h1><p>Play focused. Progress compounds.</p></div>'+
     '<div class="stack apple-stack">'+
-      '<section class="apple-panel bankroll-home">'+
-        '<div class="panel-head"><div><span class="kicker">Bankroll</span><div class="hero-money '+(monthPnl>=0?'positive':'negative')+'">'+money(monthPnl)+'</div></div><span class="period-pill">1M</span></div>'+
-        '<svg class="home-spark" viewBox="0 0 100 56" preserveAspectRatio="none" aria-hidden="true"><polyline points="'+coords+'"></polyline></svg>'+
-        '<div class="home-week"><div><span>This Week</span><strong>'+weekSessions.length+'</strong><small>Sessions</small></div><div><span>&nbsp;</span><strong>'+Math.round(weekMs/3600000)+'h</strong><small>Play time</small></div><div><span>&nbsp;</span><strong class="'+(weekPnl>=0?'positive':'negative')+'">'+money(weekPnl)+'</strong><small>Net result</small></div></div>'+
-      '</section>'+
       '<div class="home-actions">'+
-        (state.activeSession?
-          '<button class="home-action primary" data-nav="active"><span class="action-symbol">▶</span><div><strong>Resume Session</strong><small>Continue live tracking</small></div></button>':
-          '<button class="home-action primary" data-start-prep><span class="action-symbol">＋</span><div><strong>Start Session</strong><small>Prepare, then play</small></div></button>')+
-        '<button class="home-action secondary" data-nav="log"><span class="action-symbol">✎</span><div><strong>Log Session</strong><small>Add a finished session</small></div></button>'+
+        actionPrimary+
+        '<button class="home-action secondary" data-nav="log"><span class="action-symbol">✎</span><div><strong>Log Session</strong><small>Add finished session</small></div></button>'+
       '</div>'+
-      '<section class="apple-panel streak-panel"><div class="streak-main"><span class="streak-icon">🔥</span><div><strong>'+g.aStreak+' session streak</strong><small>Strong process score</small></div><span class="chev">›</span></div><div class="streak-days">'+[0,1,2,3,4,5,6].map((d,i)=>'<span class="'+(i<Math.min(g.aStreak,7)?'done':'')+'">'+['M','T','W','T','F','S','S'][i]+'</span>').join('')+'</div></section>'+
-      '<button class="apple-panel focus-row" data-nav="goals"><span class="focus-dot">◎</span><div><small>Today’s Focus</small><strong>Process over results</strong></div><span class="chev">›</span></button>'+
-      '<section class="apple-panel compact-stats"><div><strong>'+s.length+'</strong><span>Sessions</span></div><div><strong>'+(ps?ps.toFixed(1):'—')+'</strong><span>Avg process</span></div><div><strong>'+g.level+'</strong><span>Level</span></div></section>'+
-    '</div>';
-  return appShell(content,'home');
+      homeMoneyCard()+
+      '<section class="apple-panel streak-panel compact"><div class="streak-main"><span class="streak-icon">🔥</span><div><strong>'+g.aStreak+'-session A-game streak</strong><div class="streak-dots">'+dots+'</div></div><span class="chev">›</span></div></section>'+
+    '</div>',
+    'home'
+  );
 }
 function bestStateLabel(){ if(!state.sessions.length)return '—'; const buckets={Calm:[],Focused:[],Tense:[],Tilted:[]}; state.sessions.forEach(s=>{(buckets[s.state]??=[]).push(s.process||0)}); return Object.entries(buckets).sort((a,b)=>avg(b[1])-avg(a[1]))[0]?.[0]||'—'; }
 
