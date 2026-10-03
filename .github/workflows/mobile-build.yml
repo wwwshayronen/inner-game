@@ -1,0 +1,131 @@
+name: Build Inner Game mobile apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'InnerGame-v1.5-source.zip'
+      - '.github/workflows/mobile-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract source
+        run: |
+          mkdir appsrc
+          unzip -q InnerGame-v1.5-source.zip -d appsrc
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate app data
+        working-directory: appsrc
+        run: npm run check
+      - name: Build debug APK
+        working-directory: appsrc
+        run: gradle -p android --no-daemon assembleDebug
+      - name: Rename APK
+        run: cp appsrc/android/app/build/outputs/apk/debug/app-debug.apk InnerGame-v1.5-Android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InnerGame-Android-APK
+          path: InnerGame-v1.5-Android.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  ios:
+    name: iOS signed IPA
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      BUNDLE_ID: com.innergame.app
+      IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+      IOS_PROFILE_NAME: ${{ secrets.IOS_PROFILE_NAME }}
+      IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_PROVISION_PROFILE_BASE64: ${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}
+      KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract source
+        run: |
+          mkdir appsrc
+          unzip -q InnerGame-v1.5-source.zip -d appsrc
+      - name: Check signing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in IOS_TEAM_ID IOS_PROFILE_NAME IOS_CERTIFICATE_BASE64 IOS_CERTIFICATE_PASSWORD IOS_PROVISION_PROFILE_BASE64 KEYCHAIN_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required GitHub secret: $name" >&2
+              exit 1
+            fi
+          done
+      - name: Install signing certificate and profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/ios_distribution.p12"
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/innergame-signing.keychain-db"
+          echo "$IOS_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          echo "$IOS_PROVISION_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROFILE_UUID=$(/usr/bin/security cms -D -i "$PROFILE_PATH" | /usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin)
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+      - name: Archive iOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd appsrc/ios/InnerGame
+          xcodebuild -project InnerGame.xcodeproj -scheme InnerGame -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/InnerGame.xcarchive" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$IOS_TEAM_ID" PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME" archive
+      - name: Create export options
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>ad-hoc</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>${IOS_TEAM_ID}</string>
+            <key>provisioningProfiles</key><dict><key>${BUNDLE_ID}</key><string>${IOS_PROFILE_NAME}</string></dict>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+          </dict></plist>
+          PLIST
+      - name: Export signed IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/export"
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/InnerGame.xcarchive" -exportPath "$RUNNER_TEMP/export" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+          IPA=$(find "$RUNNER_TEMP/export" -maxdepth 1 -name '*.ipa' -print -quit)
+          test -n "$IPA"
+          cp "$IPA" InnerGame-v1.5-iOS.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InnerGame-iOS-IPA
+          path: InnerGame-v1.5-iOS.ipa
+          if-no-files-found: error
+          retention-days: 30
