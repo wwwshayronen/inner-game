@@ -1,0 +1,25 @@
+plugins { id 'com.android.application' }
+
+dependencies {
+    implementation 'androidx.work:work-runtime:2.10.1'
+}
+
+android {
+    namespace 'com.innergame.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.innergame.mobile'
+        minSdk 26
+        targetSdk 35
+        versionCode 7
+        versionName '1.6.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
