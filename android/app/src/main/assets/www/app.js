@@ -177,32 +177,126 @@ function allSessionHands(session){return Array.isArray(session?.hands)?session.h
 function handDisplayTitle(h){return h.title||[h.stakes,h.site].filter(Boolean).join(' · ')||'Captured hand';}
 function handCardsText(h){return [...(h.heroCards||[]),...(h.board||[])].join(' ');}
 function captureToast(text,type='ok'){let t=document.getElementById('captureToast');if(!t){t=document.createElement('div');t.id='captureToast';document.body.appendChild(t);}t.className='capture-toast '+type;t.textContent=text;requestAnimationFrame(()=>t.classList.add('show'));setTimeout(()=>t.classList.remove('show'),3000);}
-async function analyzeCapturedScreenshot(dataUrl,source='native'){
-  if(!state.activeSession){captureToast('Start a session before capturing a hand.','error');return;}
-  const compact=await resizeScreenshot(dataUrl);
-  captureToast('Analyzing screenshot…');
+function findHandRecord(id){
+  if(state.activeSession){
+    const found=allSessionHands(state.activeSession).find(h=>h.id===id);
+    if(found)return found;
+  }
+  for(const session of state.sessions){
+    const found=allSessionHands(session).find(h=>h.id===id);
+    if(found)return found;
+  }
+  return null;
+}
+function refreshCaptureUi(){
+  if(route==='active'||route==='sessionHands'||route==='captureReview')render();
+}
+async function analyzeStoredHand(handId,dataUrl){
+  const hand=findHandRecord(handId);
+  if(!hand)return;
+  hand.status='analyzing';
+  hand.error='';
+  save();
+  refreshCaptureUi();
+  captureToast('Screenshot saved · analyzing…');
   try{
-    const res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/analyze-hand',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({imageDataUrl:compact,context:{sessionGame:state.activeSession.stakes,sessionRoom:state.activeSession.room}})});
-    if(!res.ok) throw new Error('analysis');
-    const parsed=await res.json();
-    if(!parsed.isPokerHand){captureToast('No poker hand detected.','error');return;}
-    const id=crypto.randomUUID?.()||String(Date.now());
-    pendingCapturedHand={id,source,capturedAt:Date.now(),imageKey:'hand:'+id,...parsed};
-    await storeHandImage(pendingCapturedHand.imageKey,compact);
-    if((parsed.confidence||0)>=.9 && (!parsed.uncertainFields||parsed.uncertainFields.length===0)){
-      saveCapturedHand(pendingCapturedHand); pendingCapturedHand=null; captureToast('Hand saved ✓');
+    const contextSession=state.activeSession || state.sessions.find(s=>allSessionHands(s).some(h=>h.id===handId));
+    const res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/analyze-hand',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      cache:'no-store',
+      body:JSON.stringify({
+        imageDataUrl:dataUrl,
+        context:{
+          sessionGame:contextSession?.stakes||contextSession?.game||'',
+          sessionRoom:contextSession?.room||''
+        }
+      })
+    });
+    let parsed={};
+    try{ parsed=await res.json(); }catch{}
+    if(!res.ok) throw new Error(parsed?.error||('HTTP '+res.status));
+    if(!parsed.isPokerHand){
+      Object.assign(hand,{
+        status:'needs_review',
+        reviewNeeded:true,
+        confidence:Number(parsed.confidence)||0,
+        title:'Unrecognized screenshot',
+        description:'The screenshot is saved, but the poker hand could not be recognized confidently.',
+        uncertainFields:parsed.uncertainFields||[]
+      });
+      pendingCapturedHand=hand;
+      save();
+      refreshCaptureUi();
+      captureToast('Screenshot saved · review needed','error');
+      return;
+    }
+    Object.assign(hand,parsed,{
+      status:'ready',
+      error:'',
+      reviewNeeded:(Number(parsed.confidence)||0)<0.90 || Boolean(parsed.uncertainFields?.length)
+    });
+    save();
+    refreshCaptureUi();
+    if(hand.reviewNeeded){
+      pendingCapturedHand=hand;
+      captureToast('Hand saved · review recommended');
     }else{
-      navigate('captureReview');
+      if(pendingCapturedHand?.id===hand.id)pendingCapturedHand=null;
+      captureToast('Hand saved ✓');
     }
   }catch(e){
     console.error(e);
-    captureToast('Could not analyze screenshot.','error');
+    hand.status='failed';
+    hand.reviewNeeded=true;
+    hand.error=String(e?.message||'Analysis failed');
+    hand.title=hand.title&&hand.title!=='Analyzing hand…'?hand.title:'Captured hand';
+    hand.description='Screenshot saved. Analysis failed — tap Retry.';
+    save();
+    refreshCaptureUi();
+    captureToast('Screenshot saved · analysis failed','error');
+  }
+}
+async function analyzeCapturedScreenshot(dataUrl,source='native'){
+  if(!state.activeSession){captureToast('Start a session before capturing a hand.','error');return;}
+  const compact=await resizeScreenshot(dataUrl);
+  const id=crypto.randomUUID?.()||String(Date.now());
+  const provisional={
+    id,
+    source,
+    capturedAt:Date.now(),
+    imageKey:'hand:'+id,
+    status:'analyzing',
+    reviewNeeded:false,
+    title:'Analyzing hand…',
+    description:'Screenshot saved. Analysis in progress.',
+    confidence:0,
+    heroCards:[],
+    board:[],
+    uncertainFields:[]
+  };
+  try{
+    await storeHandImage(provisional.imageKey,compact);
+    saveCapturedHand(provisional);
+    refreshCaptureUi();
+    captureToast('Screenshot saved · analyzing…');
+    await analyzeStoredHand(id,compact);
+  }catch(e){
+    console.error(e);
+    captureToast('Could not save screenshot.','error');
   }
 }
 function saveCapturedHand(hand){
   if(!state.activeSession)return;
   state.activeSession.hands=allSessionHands(state.activeSession);
-  state.activeSession.hands.push({...hand,userEdited:false});
+  const existing=state.activeSession.hands.find(x=>x.id===hand.id);
+  if(existing)Object.assign(existing,hand);
+  else state.activeSession.hands.push({...hand,userEdited:Boolean(hand.userEdited)});
+  save();
+}
+function removeCapturedHand(id){
+  if(state.activeSession)state.activeSession.hands=allSessionHands(state.activeSession).filter(h=>h.id!==id);
+  state.sessions.forEach(s=>{if(Array.isArray(s.hands))s.hands=s.hands.filter(h=>h.id!==id);});
   save();
 }
 window.innerGameReceiveScreenshot=(dataUrl,source='native')=>analyzeCapturedScreenshot(dataUrl,source);
@@ -219,19 +313,37 @@ function captureReview(){
     </div>
     <div class="confidence-note">Confidence: ${Math.round((h.confidence||0)*100)}%${h.uncertainFields?.length?' · Check: '+esc(h.uncertainFields.join(', ')):''}</div>
   </section>
-  <button class="btn primary" data-save-capture>Save to Session</button>
-  <button class="btn ghost" data-discard-capture>Discard</button>`,'sessions');
+  <button class="btn primary" data-save-capture>Save Changes</button>
+  <button class="btn ghost danger-text" data-discard-capture>Delete Hand</button>`,'sessions');
 }
 function captureField(label,key,value){return `<div class="field"><label>${label}</label><input type="text" data-capture-field="${key}" value="${esc(value||'')}"></div>`;}
 function sessionHands(){
   const target=selectedSessionHandsId==='active'?state.activeSession:state.sessions.find(s=>s.id===selectedSessionHandsId);
   if(!target){route='sessions';return sessions();}
   const hands=allSessionHands(target);
-  return appShell(`${header('Session <span class="accent">Hands</span>',`${hands.length} captured hand${hands.length===1?'':'s'}`)}
-    <div class="captured-hands-list">${hands.length?hands.map(handCard).join(''):'<div class="notice">No screenshots saved in this session yet.</div>'}</div>`,'sessions');
+  const analyzing=hands.filter(h=>h.status==='analyzing').length;
+  return appShell(`${header('Session <span class="accent">Hands</span>',`${hands.length} captured hand${hands.length===1?'':'s'}${analyzing?' · '+analyzing+' analyzing':''}`)}
+    <div class="captured-hands-list">${hands.length?hands.slice().reverse().map(handCard).join(''):'<div class="notice">No screenshots saved in this session yet.</div>'}</div>`,'sessions');
 }
-function handCard(h){return `<section class="card captured-hand-card"><img data-hand-image-key="${esc(h.imageKey)}" alt=""><div><strong>${esc(handDisplayTitle(h))}</strong><small>${esc([h.site,h.heroPosition,handCardsText(h)].filter(Boolean).join(' · '))}</small><p>${esc(h.description||h.actionSummary||'')}</p></div></section>`;}
+function handCard(h){
+  const status=h.status||'ready';
+  const statusText=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review recommended':'Saved';
+  const actions=status==='failed'
+    ? `<button class="hand-inline-action" data-retry-hand="${esc(h.id)}">Retry</button>`
+    : h.reviewNeeded
+      ? `<button class="hand-inline-action" data-review-hand="${esc(h.id)}">Review</button>`
+      : '';
+  return `<section class="card captured-hand-card ${esc(status)}"><img data-hand-image-key="${esc(h.imageKey)}" alt=""><div><div class="hand-card-top"><strong>${esc(handDisplayTitle(h))}</strong><span class="hand-status ${esc(status)}">${esc(statusText)}</span></div><small>${esc([h.site,h.heroPosition,handCardsText(h)].filter(Boolean).join(' · '))}</small><p>${esc(h.description||h.actionSummary||'')}</p>${actions}</div></section>`;
+}
 async function hydrateHandImages(){for(const el of document.querySelectorAll('[data-hand-image-key]')){try{const src=await getHandImage(el.dataset.handImageKey);if(src)el.src=src;}catch{}}}
+async function retryCapturedHand(id){
+  const hand=findHandRecord(id);if(!hand)return;
+  try{
+    const src=await getHandImage(hand.imageKey);
+    if(!src){captureToast('Screenshot image is missing.','error');return;}
+    await analyzeStoredHand(id,src);
+  }catch(e){captureToast('Could not retry analysis.','error');}
+}
 function triggerNativeCapture(){nativeCall('captureHand',{});}
 
 function scheduleBreakReminders(){ if(!state.activeSession)return; nativeCall('scheduleBreakReminders',{startedAt:state.activeSession.startedAt, intervalMinutes:60, breakMinutes:5}); }
@@ -692,8 +804,10 @@ function bind(){
   const captureBtn=document.querySelector('[data-capture-hand]'); if(captureBtn)captureBtn.onclick=triggerNativeCapture;
   const openActiveHands=document.querySelector('[data-open-active-hands]'); if(openActiveHands)openActiveHands.onclick=()=>{selectedSessionHandsId='active';navigate('sessionHands');};
   document.querySelectorAll('[data-open-session-hands]').forEach(el=>el.onclick=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');});
-  const saveCapture=document.querySelector('[data-save-capture]'); if(saveCapture)saveCapture.onclick=()=>{ if(!pendingCapturedHand)return; document.querySelectorAll('[data-capture-field]').forEach(el=>{const k=el.dataset.captureField;let v=el.value;if(k==='heroCards'||k==='board')v=v.trim().split(/\s+/).filter(Boolean);pendingCapturedHand[k]=v;}); pendingCapturedHand.userEdited=true; saveCapturedHand(pendingCapturedHand); pendingCapturedHand=null; captureToast('Hand saved ✓'); navigate('active'); };
-  const discardCapture=document.querySelector('[data-discard-capture]'); if(discardCapture)discardCapture.onclick=()=>{pendingCapturedHand=null;navigate('active');};
+  const saveCapture=document.querySelector('[data-save-capture]'); if(saveCapture)saveCapture.onclick=()=>{ if(!pendingCapturedHand)return; document.querySelectorAll('[data-capture-field]').forEach(el=>{const k=el.dataset.captureField;let v=el.value;if(k==='heroCards'||k==='board')v=v.trim().split(/\s+/).filter(Boolean);pendingCapturedHand[k]=v;}); pendingCapturedHand.userEdited=true; pendingCapturedHand.reviewNeeded=false; pendingCapturedHand.status='ready'; save(); pendingCapturedHand=null; captureToast('Hand updated ✓'); navigate('active'); };
+  const discardCapture=document.querySelector('[data-discard-capture]'); if(discardCapture)discardCapture.onclick=()=>{if(pendingCapturedHand)removeCapturedHand(pendingCapturedHand.id);pendingCapturedHand=null;navigate('active');};
+  document.querySelectorAll('[data-retry-hand]').forEach(el=>el.onclick=()=>retryCapturedHand(el.dataset.retryHand));
+  document.querySelectorAll('[data-review-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.reviewHand);if(pendingCapturedHand)navigate('captureReview');});
   const exp=document.getElementById('exportData'); if(exp)exp.onclick=()=>{const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='inner-game-data.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),500)};
   const seed=document.getElementById('seedDemo'); if(seed)seed.onclick=()=>{seedDemo();save();navigate('insights');};
   const clear=document.getElementById('clearData'); if(clear)clear.onclick=()=>{if(confirm('Delete all locally stored Inner Game data?')){cancelBreakReminders();localStorage.removeItem(STORAGE_KEY);LEGACY_STORAGE_KEYS.forEach(k=>localStorage.removeItem(k));location.reload();}};
