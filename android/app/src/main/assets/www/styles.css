@@ -239,3 +239,12 @@ input:focus,textarea:focus,select:focus{border-color:rgba(53,217,138,.65)!import
   .home-action small{font-size:10px}
   .home-money-head strong{font-size:34px}
 }
+
+
+/* screenshot hand capture */
+.capture-toast{position:fixed;z-index:200;left:50%;top:calc(env(safe-area-inset-top) + 16px);transform:translate(-50%,-16px);opacity:0;pointer-events:none;padding:11px 16px;border-radius:999px;background:#121619;border:1px solid var(--line);color:#f5f5f7;font-size:13px;font-weight:700;box-shadow:0 14px 36px rgba(0,0,0,.35);transition:.2s ease}.capture-toast.show{opacity:1;transform:translate(-50%,0)}.capture-toast.error{color:#ffd8d6;border-color:rgba(255,69,58,.35)}
+.capture-review{display:grid;gap:16px}.capture-review-image{width:100%;max-height:420px;object-fit:contain;border-radius:14px;background:#050607;border:1px solid var(--line)}
+.capture-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.capture-fields .field:last-child{grid-column:1/-1}.confidence-note{font-size:12px;color:var(--muted);padding-top:4px}
+.active-hands-card{margin-top:var(--gap)}.active-hands-card .btn.compact{min-width:auto;padding:0 14px}.session-hands-link{margin-top:12px;width:100%;height:42px;border:0;border-top:1px solid var(--line);background:transparent;color:var(--accent);font-weight:700;text-align:left;padding:10px 0 0}
+.captured-hands-list{display:grid;gap:12px}.captured-hand-card{display:grid;grid-template-columns:118px 1fr;gap:14px;padding:12px;overflow:hidden}.captured-hand-card img{width:118px;height:86px;object-fit:cover;border-radius:10px;background:#080a0c;border:1px solid var(--line)}.captured-hand-card strong,.captured-hand-card small{display:block}.captured-hand-card strong{font-size:15px}.captured-hand-card small{font-size:11px;color:var(--muted);margin-top:4px}.captured-hand-card p{font-size:12px;color:#c7cbd0;line-height:1.35;margin:8px 0 0}
+@media(max-width:520px){.capture-fields{grid-template-columns:1fr}.captured-hand-card{grid-template-columns:94px 1fr}.captured-hand-card img{width:94px;height:78px}}
