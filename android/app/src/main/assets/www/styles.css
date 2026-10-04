@@ -251,3 +251,26 @@ input:focus,textarea:focus,select:focus{border-color:rgba(53,217,138,.65)!import
 
 
 .hand-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.hand-status{font-size:10px;font-weight:800;padding:4px 8px;border-radius:999px;background:rgba(53,217,138,.10);color:var(--accent);white-space:nowrap}.hand-status.analyzing{color:#ffd276;background:rgba(255,210,118,.10)}.hand-status.failed{color:var(--danger);background:rgba(255,107,114,.10)}.hand-inline-action{margin-top:9px;min-height:34px;padding:0 12px;border-radius:10px;border:1px solid var(--line);background:#111619;color:var(--accent);font-size:12px;font-weight:800}.captured-hand-card.analyzing{opacity:.86}.captured-hand-card.failed{border-color:rgba(255,107,114,.22)}
+
+
+/* v1.8.3 hand detail UX */
+.captured-hand-card{width:100%;text-align:left;border:1px solid var(--line);color:inherit;cursor:pointer;transition:transform .14s ease,border-color .14s ease,background .14s ease}
+.captured-hand-card:active{transform:scale(.992);background:#12171a}
+.hand-open-affordance{display:inline-block;margin-top:10px;font-size:11px;font-weight:800;color:var(--accent)}
+.hand-detail-hero{position:relative;overflow:hidden;padding:0;background:#050607}
+.hand-detail-hero img{display:block;width:100%;max-height:66vh;object-fit:contain;background:#050607}
+.hand-detail-overlay{position:absolute;right:12px;top:12px}
+.hand-detail-summary h2{margin:5px 0 0;font-size:25px;line-height:1.12;letter-spacing:-.035em}
+.hand-detail-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.confidence-chip{flex:0 0 auto;padding:6px 9px;border-radius:999px;background:#10171a;color:#aeb5ba;font-size:11px;font-weight:800}
+.hand-meta-line{margin-top:9px;color:#9aa1a7;font-size:12px;line-height:1.4}
+.hand-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:16px}
+.hand-facts>div{padding:12px;border-radius:13px;background:#0b0f11;border:1px solid var(--line)}
+.hand-facts small,.hand-facts strong{display:block}
+.hand-facts small{font-size:10px;color:#8d949a;text-transform:uppercase;letter-spacing:.05em}
+.hand-facts strong{font-size:15px;margin-top:5px;word-break:break-word}
+.hand-detail-copy{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.hand-detail-copy small{font-size:10px;color:#8d949a;text-transform:uppercase;letter-spacing:.05em}
+.hand-detail-copy p{margin:6px 0 0;color:#d6d9dc;font-size:13px;line-height:1.45}
+.hand-captured-at{margin-top:16px;color:#747b81;font-size:11px}
+@media(max-width:420px){.hand-facts{grid-template-columns:1fr 1fr}.hand-facts>div:last-child{grid-column:1/-1}}
