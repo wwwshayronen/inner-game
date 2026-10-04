@@ -1,4 +1,4 @@
-name: Build Inner Game APK
+name: Build Inner Game Apps
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'android/**'
+      - 'desktop/**'
       - 'icon.b64'
       - '.github/workflows/apk-build.yml'
 
@@ -16,6 +17,7 @@ permissions:
 
 jobs:
   android:
+    name: Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -44,5 +46,74 @@ jobs:
         with:
           name: InnerGame-v1.7.2-Android-APK
           path: InnerGame-v1.7.2-Android.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  mac:
+    name: macOS DMG
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare desktop icon
+        shell: bash
+        run: |
+          mkdir -p desktop/build
+          base64 --decode icon.b64 > desktop/build/icon.png
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+      - name: Validate desktop shell
+        run: |
+          node --check desktop/main.cjs
+          node --check desktop/scripts/prepare-web.cjs
+          node --check android/app/src/main/assets/www/app.js
+      - name: Build macOS DMG
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InnerGame-macOS-DMG
+          path: desktop/dist/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: Windows EXE
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare desktop icon
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path desktop/build | Out-Null
+          [IO.File]::WriteAllBytes("desktop/build/icon.png", [Convert]::FromBase64String((Get-Content icon.b64 -Raw)))
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+      - name: Validate desktop shell
+        shell: pwsh
+        run: |
+          node --check desktop/main.cjs
+          node --check desktop/scripts/prepare-web.cjs
+          node --check android/app/src/main/assets/www/app.js
+      - name: Build Windows installer
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: InnerGame-Windows-EXE
+          path: desktop/dist/*.exe
           if-no-files-found: error
           retention-days: 30
