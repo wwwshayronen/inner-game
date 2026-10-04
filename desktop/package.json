@@ -1,6 +1,6 @@
 {
   "name": "inner-game-desktop",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Inner Game desktop app for macOS and Windows",
   "main": "main.cjs",
   "author": "Inner Game",
@@ -8,7 +8,7 @@
   "scripts": {
     "prepare:web": "node scripts/prepare-web.cjs",
     "start": "npm run prepare:web && electron .",
-    "build:mac": "npm run prepare:web && electron-builder --mac dmg",
+    "build:mac": "npm run prepare:web && electron-builder --mac dmg --universal",
     "build:win": "npm run prepare:web && electron-builder --win nsis"
   },
   "devDependencies": {
