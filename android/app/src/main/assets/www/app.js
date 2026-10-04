@@ -31,7 +31,7 @@ let moneyRange = '30';
 let moneyGame = 'all';
 let pendingCapturedHand = null;
 let selectedSessionHandsId = null;
-const HAND_ANALYSIS_API_URL = localStorage.getItem('innerGame.handApiUrl') || 'http://localhost:3000';
+const HAND_ANALYSIS_API_URL = localStorage.getItem('innerGame.handApiUrl') || 'https://inner-game-production.up.railway.app';
 const BREATH_WORKOUTS = {
   focus:{name:'Focus',short:'Box breathing',description:'Steady attention before you play.',phases:[
     {name:'Inhale',duration:4,cls:'inhale',cue:'Breathe in through your nose',fill:'up'},
