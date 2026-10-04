@@ -1,6 +1,6 @@
 {
   "name": "inner-game-desktop",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Inner Game desktop app for macOS and Windows",
   "main": "main.cjs",
   "author": "Inner Game",
@@ -25,17 +25,22 @@
     },
     "files": [
       "main.cjs",
+      "preload.cjs",
       "www/**/*",
       "package.json"
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "artifactName": "InnerGame-${version}-mac-${arch}.${ext}",
       "icon": "build/icon.png"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "artifactName": "InnerGame-${version}-windows-${arch}-setup.${ext}",
       "icon": "build/icon.png"
     },
