@@ -22,8 +22,6 @@ async function capturePrimaryScreen() {
     await mainWindow.webContents.executeJavaScript(
       `window.innerGameReceiveScreenshot && window.innerGameReceiveScreenshot(${JSON.stringify(dataUrl)}, 'desktop_hotkey')`
     );
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
   } catch (error) {
     console.error('Capture failed', error);
   }
