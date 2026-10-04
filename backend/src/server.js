@@ -16,6 +16,8 @@ const handSchema = z.object({
   site: z.string().default(""),
   gameType: z.enum(["cash","tournament","unknown"]).default("unknown"),
   title: z.string().default(""),
+  tournamentName: z.string().default(""),
+  visibleEventText: z.string().default(""),
   stakes: z.string().default(""),
   blinds: z.string().default(""),
   tableType: z.string().default(""),
@@ -31,13 +33,15 @@ const handSchema = z.object({
 const schema = {
   type:"object",
   additionalProperties:false,
-  required:["isPokerHand","confidence","site","gameType","title","stakes","blinds","tableType","heroPosition","heroCards","board","pot","actionSummary","description","uncertainFields"],
+  required:["isPokerHand","confidence","site","gameType","title","tournamentName","visibleEventText","stakes","blinds","tableType","heroPosition","heroCards","board","pot","actionSummary","description","uncertainFields"],
   properties:{
     isPokerHand:{type:"boolean"},
     confidence:{type:"number",minimum:0,maximum:1},
     site:{type:"string"},
     gameType:{type:"string",enum:["cash","tournament","unknown"]},
     title:{type:"string"},
+    tournamentName:{type:"string"},
+    visibleEventText:{type:"string"},
     stakes:{type:"string"},
     blinds:{type:"string"},
     tableType:{type:"string"},
@@ -69,13 +73,17 @@ app.post("/analyze-hand", async (req,res)=>{
 
     const prompt = [
       "Analyze this poker screenshot for Inner Game.",
-      "Extract only information actually visible or strongly inferable from the screenshot.",
-      "Do not invent action that is not visible.",
+      "The screenshot is the source of truth. Session context is only a weak hint and must NEVER override visible screenshot text.",
+      "Extract only information actually visible or strongly inferable from the screenshot. Do not invent hidden action.",
+      "First read all visible event/tournament text on the table UI. Preserve the meaningful event name even when it is truncated.",
+      "For tournamentName: use the tournament/event name visible in the screenshot, excluding temporary table-state suffixes such as '- 9th Place', blind countdowns, rank, prize jump, or player count.",
+      "For visibleEventText: transcribe the visible event/title line as closely as possible.",
+      "For title: if this is a tournament, use tournamentName. Do NOT use the session game/stakes as the title when a tournament/event name is visible. For cash games, a concise title such as 'NL100 · GG Poker' is fine.",
+      "Example: if the screenshot visibly says 'WSOP $1M Ranking Freeroll - 9th Pla...' then tournamentName/title should be 'WSOP $1M Ranking Freeroll', not the session value 'NL100'.",
       "Prefer compact poker notation for cards such as As, Qh, 7d, Tc.",
-      "Title should be the best human-friendly hand title, for example '$54 Bounty Main Event' or 'NL100 · GG Poker'.",
-      "Description should be one concise sentence summarizing the visible hand.",
-      context?.sessionGame ? `Current session game: ${context.sessionGame}` : "",
-      context?.sessionRoom ? `Current session room/site: ${context.sessionRoom}` : ""
+      "Description should be one concise sentence summarizing only the visible hand state.",
+      context?.sessionGame ? `Session game hint only: ${context.sessionGame}` : "",
+      context?.sessionRoom ? `Session room/site hint only: ${context.sessionRoom}` : ""
     ].filter(Boolean).join("\n");
 
     const response = await client.responses.create({
