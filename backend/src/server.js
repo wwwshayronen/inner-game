@@ -8,7 +8,7 @@ app.use(cors({ origin: true }));
 app.use(express.json({ limit: "18mb" }));
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const MODEL = process.env.OPENAI_MODEL || "gpt-5";
+const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
 const handSchema = z.object({
   isPokerHand: z.boolean(),
@@ -59,6 +59,7 @@ function validateCards(cards){
 app.get("/health", (_req,res)=>res.json({ok:true,model:MODEL}));
 
 app.post("/analyze-hand", async (req,res)=>{
+  const startedAt = Date.now();
   try{
     const { imageDataUrl, context={} } = req.body || {};
     if(typeof imageDataUrl!=="string" || !imageDataUrl.startsWith("data:image/")){
@@ -99,9 +100,10 @@ app.post("/analyze-hand", async (req,res)=>{
     const parsed = handSchema.parse(JSON.parse(response.output_text));
     parsed.heroCards = validateCards(parsed.heroCards);
     parsed.board = validateCards(parsed.board);
+    console.log(JSON.stringify({event:"hand_analyzed",ms:Date.now()-startedAt,model:MODEL,confidence:parsed.confidence,isPokerHand:parsed.isPokerHand}));
     return res.json(parsed);
   }catch(error){
-    console.error(error);
+    console.error(JSON.stringify({event:"hand_analysis_failed",ms:Date.now()-startedAt,model:MODEL,error:String(error?.message||error)}));
     return res.status(500).json({error:"Hand analysis failed"});
   }
 });
