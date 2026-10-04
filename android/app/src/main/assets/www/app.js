@@ -155,6 +155,7 @@ function formatDuration(ms){ const total=Math.max(0,Math.floor((Number(ms)||0)/1
 function nativeCall(name,payload={}){
   try{
     if(window.InnerGameNative&&typeof window.InnerGameNative[name]==='function'){ window.InnerGameNative[name](JSON.stringify(payload)); return; }
+    if(window.InnerGameDesktop&&name==='captureHand'&&typeof window.InnerGameDesktop.captureHand==='function'){ window.InnerGameDesktop.captureHand(); return; }
     if(window.webkit?.messageHandlers?.innerGame) window.webkit.messageHandlers.innerGame.postMessage({action:name,...payload});
   }catch{}
 }
