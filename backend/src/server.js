@@ -59,6 +59,14 @@ function validateCards(cards){
   const rx=/^(10|[2-9TJQKA])[shdc♠♥♦♣]?$/i;
   return cards.filter(c=>rx.test(String(c).trim()));
 }
+function cleanTournamentText(value=""){
+  return String(value||"")
+    .replace(/\s+/g," ")
+    .replace(/\s*-\s*\d+(?:st|nd|rd|th)?\s*Pla(?:ce)?\b.*$/i,"")
+    .replace(/\s*Blinds?\b.*$/i,"")
+    .replace(/\s*(?:Next Prize|Prize Jump|My Rank)\b.*$/i,"")
+    .trim();
+}
 
 app.get("/health", (_req,res)=>res.json({ok:true,model:MODEL}));
 
@@ -108,7 +116,11 @@ app.post("/analyze-hand", async (req,res)=>{
     const parsed = handSchema.parse(JSON.parse(response.output_text));
     parsed.heroCards = validateCards(parsed.heroCards);
     parsed.board = validateCards(parsed.board);
-    console.log(JSON.stringify({event:"hand_analyzed",ms:Date.now()-startedAt,model:MODEL,confidence:parsed.confidence,isPokerHand:parsed.isPokerHand}));
+    if(parsed.gameType==="tournament"){
+      parsed.tournamentName = cleanTournamentText(parsed.tournamentName || parsed.visibleEventText);
+      if(parsed.tournamentName) parsed.title = parsed.tournamentName;
+    }
+    console.log(JSON.stringify({event:"hand_analyzed",ms:Date.now()-startedAt,model:MODEL,confidence:parsed.confidence,isPokerHand:parsed.isPokerHand,title:parsed.title}));
     return res.json(parsed);
   }catch(error){
     console.error(JSON.stringify({event:"hand_analysis_failed",ms:Date.now()-startedAt,model:MODEL,error:String(error?.message||error)}));
