@@ -15,9 +15,10 @@ import android.util.Base64;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.widget.Toast;
 
+import androidx.webkit.WebViewAssetLoader;
+import androidx.webkit.WebViewClientCompat;
 import androidx.work.Data;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkManager;
@@ -56,7 +57,19 @@ public final class MainActivity extends Activity {
 
         createNotificationChannel();
         webView.addJavascriptInterface(new NativeBridge(), "InnerGameNative");
-        webView.setWebViewClient(new WebViewClient() {
+        WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
+
+        webView.setWebViewClient(new WebViewClientCompat() {
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(
+                    WebView view,
+                    android.webkit.WebResourceRequest request
+            ) {
+                return assetLoader.shouldInterceptRequest(request.getUrl());
+            }
+
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
@@ -64,7 +77,7 @@ public final class MainActivity extends Activity {
             }
         });
         handleIncomingIntent(getIntent());
-        webView.loadUrl("file:///android_asset/www/index.html");
+        webView.loadUrl("https://appassets.androidplatform.net/assets/www/index.html");
     }
 
     private void handleIncomingIntent(Intent intent) {
