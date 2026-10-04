@@ -1,0 +1,67 @@
+@media (min-width: 800px) {
+  html, body { min-width: 900px; background:#050607; }
+  body { overflow-y:auto; }
+  .app-shell {
+    max-width:none !important;
+    width:100%;
+    padding:32px 42px 42px 132px !important;
+    min-height:100vh;
+  }
+  .app-shell > *:not(.tabs):not(.nav-running) {
+    max-width:1080px;
+    margin-left:auto;
+    margin-right:auto;
+  }
+  .home-top { padding-top:6px !important; }
+  .home-top h1 { font-size:44px !important; }
+  .apple-stack { gap:16px !important; }
+  .home-actions {
+    grid-template-columns:1.25fr 1fr !important;
+    max-width:680px !important;
+    margin-left:0 !important;
+  }
+  .home-action { min-height:84px !important; }
+  .home-money-card { max-width:1080px; }
+  .home-money-chart { height:250px !important; }
+  .home-money-kpis strong { font-size:24px !important; }
+  .streak-panel.compact { max-width:680px !important; margin-left:0 !important; }
+
+  .apple-tabs {
+    position:fixed !important;
+    left:0 !important;
+    top:0 !important;
+    bottom:0 !important;
+    transform:none !important;
+    width:94px !important;
+    height:100vh !important;
+    grid-template-columns:1fr !important;
+    grid-template-rows:repeat(5, 1fr) !important;
+    padding:24px 10px !important;
+    border-top:0 !important;
+    border-right:1px solid var(--line) !important;
+    align-items:center !important;
+    background:rgba(7,9,10,.96) !important;
+  }
+  .apple-tabs .tab, .tab-create {
+    width:100% !important;
+    margin:0 !important;
+    align-self:center !important;
+    justify-self:center !important;
+  }
+  .apple-tabs .tab { min-height:70px !important; font-size:11px !important; }
+  .apple-tabs .ti { font-size:21px !important; }
+  .tab-create { width:58px !important; height:58px !important; }
+  .nav-running {
+    left:112px !important;
+    bottom:22px !important;
+    transform:none !important;
+  }
+  .card, .apple-panel { border-radius:18px !important; }
+  .modal-backdrop { padding-left:116px !important; align-items:center !important; }
+  .confirm-sheet { max-width:520px !important; }
+}
+
+@media (min-width: 1180px) {
+  .home-money-card { padding:22px 24px 20px !important; }
+  .home-money-chart { height:290px !important; }
+}
