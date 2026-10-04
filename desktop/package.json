@@ -1,0 +1,49 @@
+{
+  "name": "inner-game-desktop",
+  "version": "1.0.0",
+  "description": "Inner Game desktop app for macOS and Windows",
+  "main": "main.cjs",
+  "author": "Inner Game",
+  "license": "UNLICENSED",
+  "scripts": {
+    "prepare:web": "node scripts/prepare-web.cjs",
+    "start": "npm run prepare:web && electron .",
+    "build:mac": "npm run prepare:web && electron-builder --mac dmg",
+    "build:win": "npm run prepare:web && electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.innergame.desktop",
+    "productName": "Inner Game",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.cjs",
+      "www/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": ["dmg"],
+      "artifactName": "InnerGame-${version}-mac-${arch}.${ext}",
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": ["nsis"],
+      "artifactName": "InnerGame-${version}-windows-${arch}-setup.${ext}",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
