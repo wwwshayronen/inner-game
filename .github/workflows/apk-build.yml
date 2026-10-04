@@ -9,6 +9,7 @@ on:
     paths:
       - 'android/**'
       - 'desktop/**'
+      - 'backend/**'
       - 'icon.b64'
       - '.github/workflows/apk-build.yml'
 
@@ -41,11 +42,11 @@ jobs:
       - name: Build APK
         run: gradle -p android --no-daemon assembleDebug
       - name: Prepare APK
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk InnerGame-v1.7.2-Android.apk
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk InnerGame-v1.8.0-Android.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: InnerGame-v1.7.2-Android-APK
-          path: InnerGame-v1.7.2-Android.apk
+          name: InnerGame-v1.8.0-Android-APK
+          path: InnerGame-v1.8.0-Android.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -117,3 +118,20 @@ jobs:
           path: desktop/dist/*.exe
           if-no-files-found: error
           retention-days: 30
+
+
+  backend-check:
+    name: Hand Analysis API check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install API dependencies
+        working-directory: backend
+        run: npm install --no-audit --no-fund
+      - name: Validate API source
+        working-directory: backend
+        run: npm run check
