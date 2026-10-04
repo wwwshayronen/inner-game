@@ -1,6 +1,6 @@
 {
   "name": "inner-game-desktop",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Inner Game desktop app for macOS and Windows",
   "main": "main.cjs",
   "author": "Inner Game",
