@@ -177,6 +177,20 @@ async function resizeScreenshot(dataUrl,max=1280,quality=.78){
 function allSessionHands(session){return Array.isArray(session?.hands)?session.hands:[];}
 function handDisplayTitle(h){return h.tournamentName||h.title||[h.stakes,h.site].filter(Boolean).join(' · ')||'Captured hand';}
 function handCardsText(h){return [...(h.heroCards||[]),...(h.board||[])].join(' ');}
+function cleanVisibleTournamentText(v=''){
+  let s=String(v||'').replace(/\s+/g,' ').trim();
+  s=s.replace(/\s*-\s*\d+(?:st|nd|rd|th)?\s*Pla(?:ce)?\b.*$/i,'');
+  s=s.replace(/\s*Blinds?\b.*$/i,'');
+  s=s.replace(/\s*(?:Next Prize|Prize Jump|My Rank)\b.*$/i,'');
+  return s.trim();
+}
+function normalizeCapturedTitle(parsed, fallback='Captured hand'){
+  if(parsed?.gameType==='tournament'){
+    const tournament=cleanVisibleTournamentText(parsed.tournamentName||parsed.visibleEventText||'');
+    if(tournament)return tournament;
+  }
+  return String(parsed?.title||parsed?.tournamentName||fallback||'Captured hand').trim();
+}
 function captureToast(text,type='ok'){let t=document.getElementById('captureToast');if(!t){t=document.createElement('div');t.id='captureToast';document.body.appendChild(t);}t.className='capture-toast '+type;t.textContent=text;requestAnimationFrame(()=>t.classList.add('show'));setTimeout(()=>t.classList.remove('show'),3000);}
 function findHandRecord(id){
   if(state.activeSession){
@@ -233,6 +247,8 @@ async function analyzeStoredHand(handId,dataUrl){
       return;
     }
     Object.assign(hand,parsed,{
+      title:normalizeCapturedTitle(parsed,hand.title),
+      tournamentName:cleanVisibleTournamentText(parsed.tournamentName||parsed.visibleEventText||''),
       status:'ready',
       error:'',
       reviewNeeded:false
@@ -319,26 +335,69 @@ function captureReview(){
 }
 function captureField(label,key,value){return `<div class="field"><label>${label}</label><input type="text" data-capture-field="${key}" value="${esc(value||'')}"></div>`;}
 function selectedHand(){return selectedHandId?findHandRecord(selectedHandId):null;}
+function pokerCardChip(card){
+  if(!card)return '';
+  const c=String(card), suit=c.slice(-1).toLowerCase(), red=suit==='h'||suit==='d'||c.includes('♥')||c.includes('♦');
+  return `<span class="poker-card-chip ${red?'red':''}">${esc(c)}</span>`;
+}
 function handDetail(){
   const h=selectedHand();
   if(!h){route='sessionHands';return sessionHands();}
-  const meta=[h.site,h.gameType&&h.gameType!=='unknown'?h.gameType:null,h.stakes||h.blinds,h.heroPosition].filter(Boolean);
-  const hero=(h.heroCards||[]).join(' '), board=(h.board||[]).join(' '), status=h.status||'ready';
-  const statusLabel=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':'Saved';
-  return appShell(`${header('Saved <span class="accent">Hand</span>','Screenshot, extracted details, and notes.')}<section class="hand-detail-hero card"><img data-hand-image-key="${esc(h.imageKey)}" alt="Poker hand screenshot"><div class="hand-detail-overlay"><span class="hand-status ${esc(status)}">${esc(statusLabel)}</span></div></section><section class="card pad hand-detail-summary"><div class="hand-detail-title-row"><div><small class="eyebrow">HAND TITLE</small><h2>${esc(handDisplayTitle(h))}</h2></div>${h.confidence?`<span class="confidence-chip">${Math.round(h.confidence*100)}%</span>`:''}</div><div class="hand-meta-line">${esc(meta.join(' · ')||'Captured from screenshot')}</div><div class="hand-facts"><div><small>Hero</small><strong>${esc(hero||'—')}</strong></div><div><small>Board</small><strong>${esc(board||'—')}</strong></div><div><small>Pot</small><strong>${esc(h.pot||'—')}</strong></div></div>${h.description?`<div class="hand-detail-copy"><small>Summary</small><p>${esc(h.description)}</p></div>`:''}${h.actionSummary?`<div class="hand-detail-copy"><small>Visible action</small><p>${esc(h.actionSummary)}</p></div>`:''}<div class="hand-captured-at">Captured ${new Date(h.capturedAt||Date.now()).toLocaleString()}</div></section>${status==='failed'?`<button class="btn primary" data-retry-hand="${esc(h.id)}">Retry analysis</button>`:''}<button class="btn secondary" data-edit-hand="${esc(h.id)}">Edit extracted details</button><button class="btn ghost danger-text" data-delete-hand="${esc(h.id)}">Delete hand</button>`,'sessions');
+  const status=h.status||'ready';
+  const statusLabel=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review recommended':'Saved automatically';
+  const title=normalizeCapturedTitle(h,handDisplayTitle(h));
+  const hero=(h.heroCards||[]), board=(h.board||[]);
+  const meta=[h.site,h.blinds||h.stakes,h.heroPosition].filter(Boolean);
+  return appShell(`${header('<span class="accent">Hand</span>','Saved automatically from your screenshot.')}
+    <section class="hand-detail-hero card">
+      <img data-hand-image-key="${esc(h.imageKey)}" alt="Poker hand screenshot">
+      <div class="hand-detail-overlay"><span class="hand-status ${esc(status)}">${esc(statusLabel)}</span></div>
+    </section>
+    <section class="hand-detail-intro">
+      <div class="hand-kind">${h.gameType==='tournament'?'TOURNAMENT':'CAPTURED HAND'}</div>
+      <h2>${esc(title)}</h2>
+      <div class="hand-meta-chips">${meta.map(x=>`<span>${esc(x)}</span>`).join('')}</div>
+      ${h.visibleEventText&&cleanVisibleTournamentText(h.visibleEventText)!==title?`<p class="visible-event-text">Detected table text: “${esc(h.visibleEventText)}”</p>`:''}
+    </section>
+    <section class="card hand-cards-panel">
+      <div class="hand-card-group"><span>Hero</span><div class="poker-card-row">${hero.length?hero.map(pokerCardChip).join(''):'<b>—</b>'}</div></div>
+      <div class="hand-card-group"><span>Board</span><div class="poker-card-row">${board.length?board.map(pokerCardChip).join(''):'<b>—</b>'}</div></div>
+      <div class="hand-card-group compact"><span>Pot</span><strong>${esc(h.pot||'—')}</strong></div>
+    </section>
+    ${h.description?`<section class="card pad hand-copy-card"><small class="eyebrow">WHAT WE SAW</small><p>${esc(h.description)}</p></section>`:''}
+    ${h.actionSummary?`<section class="card pad hand-copy-card"><small class="eyebrow">VISIBLE ACTION</small><p>${esc(h.actionSummary)}</p></section>`:''}
+    <div class="hand-detail-footer"><span>Captured ${new Date(h.capturedAt||Date.now()).toLocaleString()}</span>${h.confidence?`<span>${Math.round(h.confidence*100)}% confidence</span>`:''}</div>
+    <div class="hand-detail-actions">
+      ${status==='failed'?`<button class="btn primary" data-retry-hand="${esc(h.id)}">Retry Analysis</button>`:''}
+      <button class="btn secondary" data-edit-hand="${esc(h.id)}">Edit Details</button>
+      <button class="btn ghost danger-text" data-delete-hand="${esc(h.id)}">Delete Hand</button>
+    </div>`,'sessions');
 }
 function sessionHands(){
   const target=selectedSessionHandsId==='active'?state.activeSession:state.sessions.find(s=>s.id===selectedSessionHandsId);
   if(!target){route='sessions';return sessions();}
   const hands=allSessionHands(target);
   const analyzing=hands.filter(h=>h.status==='analyzing').length;
-  return appShell(`${header('Session <span class="accent">Hands</span>',`${hands.length} captured hand${hands.length===1?'':'s'}${analyzing?' · '+analyzing+' analyzing':''}`)}
-    <div class="captured-hands-list">${hands.length?hands.slice().reverse().map(handCard).join(''):'<div class="notice">No screenshots saved in this session yet.</div>'}</div>`,'sessions');
+  const attention=hands.filter(h=>h.status==='failed'||h.reviewNeeded).length;
+  return appShell(`${header('Session <span class="accent">Hands</span>',`${hands.length} screenshot${hands.length===1?'':'s'} saved automatically`)}
+    ${hands.length?`<section class="hands-summary"><div><strong>${hands.length}</strong><span>Saved</span></div><div><strong>${analyzing}</strong><span>Analyzing</span></div><div><strong>${attention}</strong><span>Needs attention</span></div></section>`:''}
+    <div class="captured-hands-list">${hands.length?hands.slice().reverse().map(handCard).join(''):'<div class="notice"><strong>No captured hands yet.</strong><br>Take a poker screenshot and share it to Inner Game. It will appear here immediately.</div>'}</div>`,'sessions');
 }
 function handCard(h){
   const status=h.status||'ready';
-  const statusText=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':'Saved';
-  return `<button class="card captured-hand-card ${esc(status)}" data-open-hand="${esc(h.id)}"><img data-hand-image-key="${esc(h.imageKey)}" alt=""><div><div class="hand-card-top"><strong>${esc(handDisplayTitle(h))}</strong><span class="hand-status ${esc(status)}">${esc(statusText)}</span></div><small>${esc([h.site,h.stakes||h.blinds,h.heroPosition].filter(Boolean).join(' · '))}</small><p>${esc(h.description||h.actionSummary||'Tap to open hand')}</p><span class="hand-open-affordance">Open hand →</span></div></button>`;
+  const statusText=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review':'Saved';
+  const title=normalizeCapturedTitle(h,handDisplayTitle(h));
+  const cards=(h.heroCards||[]).map(pokerCardChip).join('');
+  return `<article class="card captured-hand-card ${esc(status)}" data-open-hand="${esc(h.id)}" role="button" tabindex="0" aria-label="Open ${esc(title)}">
+    <img data-hand-image-key="${esc(h.imageKey)}" alt="">
+    <div class="captured-hand-copy">
+      <div class="hand-card-top"><strong>${esc(title)}</strong><span class="hand-status ${esc(status)}">${esc(statusText)}</span></div>
+      <small>${esc([h.site,h.blinds||h.stakes,h.heroPosition].filter(Boolean).join(' · ')||'Captured screenshot')}</small>
+      ${cards?`<div class="mini-card-row">${cards}</div>`:''}
+      <p>${esc(h.description||h.actionSummary||'Screenshot saved. Tap to open.')}</p>
+      <span class="hand-open-affordance">View hand <b>›</b></span>
+    </div>
+  </article>`;
 }
 async function hydrateHandImages(){for(const el of document.querySelectorAll('[data-hand-image-key]')){try{const src=await getHandImage(el.dataset.handImageKey);if(src)el.src=src;}catch{}}}
 async function retryCapturedHand(id){
@@ -809,10 +868,10 @@ function bind(){
   const captureBtn=document.querySelector('[data-capture-hand]'); if(captureBtn)captureBtn.onclick=triggerNativeCapture;
   const openActiveHands=document.querySelector('[data-open-active-hands]'); if(openActiveHands)openActiveHands.onclick=()=>{selectedSessionHandsId='active';navigate('sessionHands');};
   document.querySelectorAll('[data-open-session-hands]').forEach(el=>el.onclick=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');});
-  document.querySelectorAll('[data-open-hand]').forEach(el=>el.onclick=()=>{selectedHandId=el.dataset.openHand;navigate('handDetail');});
+  document.querySelectorAll('[data-open-hand]').forEach(el=>{const open=()=>{selectedHandId=el.dataset.openHand;navigate('handDetail');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-edit-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.editHand);if(pendingCapturedHand)navigate('captureReview');});
   document.querySelectorAll('[data-delete-hand]').forEach(el=>el.onclick=()=>{removeCapturedHand(el.dataset.deleteHand);selectedHandId=null;navigate('sessionHands');});
-  const saveCapture=document.querySelector('[data-save-capture]'); if(saveCapture)saveCapture.onclick=()=>{ if(!pendingCapturedHand)return; document.querySelectorAll('[data-capture-field]').forEach(el=>{const k=el.dataset.captureField;let v=el.value;if(k==='heroCards'||k==='board')v=v.trim().split(/\s+/).filter(Boolean);pendingCapturedHand[k]=v;}); pendingCapturedHand.userEdited=true; pendingCapturedHand.reviewNeeded=false; pendingCapturedHand.status='ready'; save(); pendingCapturedHand=null; captureToast('Hand updated ✓'); navigate('active'); };
+  const saveCapture=document.querySelector('[data-save-capture]'); if(saveCapture)saveCapture.onclick=()=>{ if(!pendingCapturedHand)return; const editedId=pendingCapturedHand.id; document.querySelectorAll('[data-capture-field]').forEach(el=>{const k=el.dataset.captureField;let v=el.value;if(k==='heroCards'||k==='board')v=v.trim().split(/\s+/).filter(Boolean);pendingCapturedHand[k]=v;}); pendingCapturedHand.title=normalizeCapturedTitle(pendingCapturedHand,pendingCapturedHand.title); pendingCapturedHand.userEdited=true; pendingCapturedHand.reviewNeeded=false; pendingCapturedHand.status='ready'; save(); pendingCapturedHand=null; captureToast('Hand updated ✓'); selectedHandId=editedId; navigate('handDetail'); };
   const discardCapture=document.querySelector('[data-discard-capture]'); if(discardCapture)discardCapture.onclick=()=>{if(pendingCapturedHand)removeCapturedHand(pendingCapturedHand.id);pendingCapturedHand=null;navigate('active');};
   document.querySelectorAll('[data-retry-hand]').forEach(el=>el.onclick=()=>retryCapturedHand(el.dataset.retryHand));
   document.querySelectorAll('[data-review-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.reviewHand);if(pendingCapturedHand)navigate('captureReview');});
