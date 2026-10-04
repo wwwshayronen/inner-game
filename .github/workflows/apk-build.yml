@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p desktop/build
-          base64 --decode icon.b64 > desktop/build/icon.png
+          base64 -D -i icon.b64 -o desktop/build/icon.png
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm install --no-audit --no-fund
