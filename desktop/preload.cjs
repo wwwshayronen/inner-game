@@ -1,5 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('InnerGameDesktop', {
-  captureHand: () => ipcRenderer.invoke('innergame:capture-hand')
+  captureHand: () => ipcRenderer.invoke('innergame:capture-hand'),
+  notifyHand: (payload) => ipcRenderer.invoke('innergame:notify-hand', payload)
 });
