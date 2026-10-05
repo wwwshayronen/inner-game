@@ -43,6 +43,7 @@ public final class MainActivity extends Activity {
     private static final String HAND_CHANNEL_ID = "hand_capture";
     private WebView webView;
     private String pendingScreenshotDataUrl;
+    private String pendingHandId;
     private boolean autoScreenshotEnabled = true;
     private ContentObserver screenshotObserver;
     private String lastScreenshotUri = "";
@@ -88,6 +89,7 @@ public final class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 dispatchPendingScreenshot();
+                dispatchPendingHandOpen();
             }
         });
         handleIncomingIntent(getIntent());
@@ -95,7 +97,13 @@ public final class MainActivity extends Activity {
     }
 
     private void handleIncomingIntent(Intent intent) {
-        if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) return;
+        if (intent == null) return;
+        String handId = intent.getStringExtra("handId");
+        if (handId != null && !handId.isEmpty()) {
+            pendingHandId = handId;
+            dispatchPendingHandOpen();
+        }
+        if (!Intent.ACTION_SEND.equals(intent.getAction())) return;
         String type = intent.getType();
         if (type == null || !type.startsWith("image/")) return;
 
@@ -133,6 +141,18 @@ public final class MainActivity extends Activity {
         if (pendingScreenshotDataUrl == null) return;
         final String dataUrl = pendingScreenshotDataUrl;
         dispatchScreenshotData(dataUrl, "android_share", () -> pendingScreenshotDataUrl = null);
+    }
+
+    private void dispatchPendingHandOpen() {
+        if (webView == null || pendingHandId == null || pendingHandId.isEmpty()) return;
+        final String handId = pendingHandId;
+        webView.post(() -> webView.evaluateJavascript(
+                "(function(){if(window.innerGameOpenHand){return window.innerGameOpenHand(" +
+                        JSONObject.quote(handId) + ");}return false;})()",
+                result -> {
+                    if ("true".equals(result)) pendingHandId = null;
+                }
+        ));
     }
 
     private void dispatchScreenshotData(String dataUrl, String source, Runnable onAccepted) {
