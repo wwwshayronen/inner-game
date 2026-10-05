@@ -34,6 +34,7 @@ let pendingCapturedHand = null;
 let selectedSessionHandsId = null;
 let selectedHandId = null;
 let handsFilter = 'all';
+let handReturnRoute = 'handsLibrary';
 const HAND_ANALYSIS_API_URL = localStorage.getItem('innerGame.handApiUrl') || 'https://inner-game-production.up.railway.app';
 const BREATH_WORKOUTS = {
   focus:{name:'Focus',short:'Box breathing',description:'Steady attention before you play.',phases:[
@@ -844,7 +845,7 @@ function profile(){ return appShell(`${header('More','Your game, your data, your
 function render(){ const app=document.getElementById('app'); app.innerHTML = ({home,prep:prepOverview,breathe,goals,handsIntro,handPlay,handExplain,handsComplete,review,active:activeSession,log:logSession,sessions,sessionDetail,editSession,insights,captureReview,sessionHands,handsLibrary,handDetail,profile}[route]||home)(); bind(); hydrateHandImages(); if(route==='active')startSessionTicker(); }
 function bind(){
   document.querySelectorAll('[data-nav]').forEach(el=>el.onclick=()=>navigate(el.dataset.nav));
-  document.querySelectorAll('[data-back]').forEach(el=>el.onclick=()=>navigate(route==='handDetail'?'sessionHands':route==='sessionHands'?(selectedSessionHandsId==='active'?'active':'sessions'):route==='captureReview'?(selectedHandId?'handDetail':'active'):route==='editSession'?'sessions':route==='log'||route==='active'?'home':route==='breathe'?'prep':route==='goals'?'breathe':route==='handsIntro'?'goals':route==='handPlay'?'handsIntro':route==='handExplain'?'handPlay':route==='handsComplete'?'handsIntro':route==='review'?'handsIntro':'home'));
+  document.querySelectorAll('[data-back]').forEach(el=>el.onclick=()=>navigate(route==='handDetail'?handReturnRoute:route==='handsLibrary'?'sessions':route==='sessionDetail'?'sessions':route==='sessionHands'?(selectedSessionHandsId==='active'?'active':'sessions'):route==='captureReview'?(selectedHandId?'handDetail':'active'):route==='editSession'?'sessions':route==='log'||route==='active'?'home':route==='breathe'?'prep':route==='goals'?'breathe':route==='handsIntro'?'goals':route==='handPlay'?'handsIntro':route==='handExplain'?'handPlay':route==='handsComplete'?'handsIntro':route==='review'?'handsIntro':'home'));
   const startPrep=document.querySelector('[data-start-prep]'); if(startPrep)startPrep.onclick=beginPreparation;
   document.querySelectorAll('[data-breath-level]').forEach(el=>el.onclick=()=>{ breathLevel=el.dataset.breathLevel; state.prep.breathLevel=breathLevel; save(); resetBreath(); });
   document.querySelectorAll('[data-breath-workout]').forEach(el=>el.onclick=()=>{ breathWorkout=el.dataset.breathWorkout; state.prep.breathWorkout=breathWorkout; save(); resetBreath(); });
@@ -908,9 +909,9 @@ function bind(){
   document.querySelectorAll('[data-hands-filter]').forEach(el=>el.onclick=()=>{handsFilter=el.dataset.handsFilter;render();});
   const dropZone=document.getElementById('handDropZone'); if(dropZone){dropZone.ondragover=e=>{e.preventDefault();dropZone.classList.add('dragging');};dropZone.ondragleave=()=>dropZone.classList.remove('dragging');dropZone.ondrop=e=>{e.preventDefault();dropZone.classList.remove('dragging');const file=[...(e.dataTransfer?.files||[])].find(f=>f.type.startsWith('image/'));if(!file)return;const reader=new FileReader();reader.onload=()=>window.innerGameReceiveScreenshot(reader.result,'desktop_drop');reader.readAsDataURL(file);};}
     document.querySelectorAll('[data-open-session-hands]').forEach(el=>el.onclick=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');});
-  document.querySelectorAll('[data-open-hand]').forEach(el=>{const open=()=>{selectedHandId=el.dataset.openHand;navigate('handDetail');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
+  document.querySelectorAll('[data-open-hand]').forEach(el=>{const open=()=>{handReturnRoute=route;selectedHandId=el.dataset.openHand;navigate('handDetail');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-edit-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.editHand);if(pendingCapturedHand)navigate('captureReview');});
-  document.querySelectorAll('[data-delete-hand]').forEach(el=>el.onclick=()=>{removeCapturedHand(el.dataset.deleteHand);selectedHandId=null;navigate('sessionHands');});
+  document.querySelectorAll('[data-delete-hand]').forEach(el=>el.onclick=()=>{removeCapturedHand(el.dataset.deleteHand);selectedHandId=null;navigate(handReturnRoute==='handDetail'?'handsLibrary':handReturnRoute);});
   const saveCapture=document.querySelector('[data-save-capture]'); if(saveCapture)saveCapture.onclick=()=>{ if(!pendingCapturedHand)return; const editedId=pendingCapturedHand.id; document.querySelectorAll('[data-capture-field]').forEach(el=>{const k=el.dataset.captureField;let v=el.value;if(k==='heroCards'||k==='board')v=v.trim().split(/\s+/).filter(Boolean);pendingCapturedHand[k]=v;}); pendingCapturedHand.title=normalizeCapturedTitle(pendingCapturedHand,pendingCapturedHand.title); pendingCapturedHand.userEdited=true; pendingCapturedHand.reviewNeeded=false; pendingCapturedHand.status='ready'; save(); pendingCapturedHand=null; captureToast('Hand updated ✓'); selectedHandId=editedId; navigate('handDetail'); };
   const discardCapture=document.querySelector('[data-discard-capture]'); if(discardCapture)discardCapture.onclick=()=>{if(pendingCapturedHand)removeCapturedHand(pendingCapturedHand.id);pendingCapturedHand=null;navigate('active');};
   document.querySelectorAll('[data-retry-hand]').forEach(el=>el.onclick=()=>retryCapturedHand(el.dataset.retryHand));
