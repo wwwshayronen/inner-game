@@ -43,6 +43,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -82,6 +86,7 @@ public final class MainActivity extends Activity {
     private String lastScreenshotUri = "";
     private long lastScreenshotMediaId = -1L;
     private long lastScreenshotHandledAt = 0L;
+    private boolean pendingNetworkRetryScheduled = false;
 
     @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
     @Override
@@ -464,7 +469,18 @@ public final class MainActivity extends Activity {
                 logCaptureDiagnostic(captureId, "IMAGE_READY", "chars=" + dataUrl.length());
 
                 stage = "HTTP_ANALYSIS";
-                JSONObject parsed = analyzeHandNative(dataUrl, captureId);
+                JSONObject parsed;
+                try {
+                    parsed = analyzeHandNative(dataUrl, captureId);
+                } catch (Exception networkOrApiError) {
+                    if (isTransientNetworkFailure(networkOrApiError)) {
+                        persistPendingNetworkHand(captureId, dataUrl, networkOrApiError);
+                        notifyAutoCaptureWaitingForConnection(captureId);
+                        schedulePendingNetworkRetry(900L);
+                        return;
+                    }
+                    throw networkOrApiError;
+                }
                 logCaptureDiagnostic(captureId, "HTTP_OK", "isPokerHand=" + parsed.optBoolean("isPokerHand", false));
 
                 if (!parsed.optBoolean("isPokerHand", false)) {
@@ -556,8 +572,10 @@ public final class MainActivity extends Activity {
         byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
         Exception lastError = null;
         String lastStage = "HTTP_CONNECT";
+        final long[] retryDelaysMs = new long[]{0L, 500L, 1_000L, 2_000L};
 
-        for (int attempt = 0; attempt < 2; attempt++) {
+        for (int attempt = 0; attempt < retryDelaysMs.length; attempt++) {
+            if (retryDelaysMs[attempt] > 0) Thread.sleep(retryDelaysMs[attempt]);
             HttpURLConnection connection = null;
             try {
                 logCaptureDiagnostic(captureId, "HTTP_ATTEMPT", "attempt=" + (attempt + 1) + ", bytes=" + payload.length);
@@ -612,7 +630,7 @@ public final class MainActivity extends Activity {
             }
 
             logCaptureDiagnostic(captureId, lastStage, diagnosticErrorText(lastError));
-            if (attempt == 0) Thread.sleep(180L);
+            if (!isTransientNetworkFailure(lastError) && attempt >= 1) break;
         }
 
         if (lastError instanceof CaptureStageException) throw lastError;
@@ -631,6 +649,36 @@ public final class MainActivity extends Activity {
 
     private File pendingHandFile(String captureId) {
         return new File(getFilesDir(), PENDING_HAND_PREFIX + captureId + ".json");
+    }
+
+    private boolean isTransientNetworkFailure(Throwable error) {
+        Throwable root = error;
+        while (root != null) {
+            if (root instanceof UnknownHostException
+                    || root instanceof SocketTimeoutException
+                    || root instanceof ConnectException
+                    || root instanceof NoRouteToHostException) {
+                return true;
+            }
+            Throwable next = root.getCause();
+            if (next == root) break;
+            root = next;
+        }
+        return false;
+    }
+
+    private void persistPendingNetworkHand(String captureId, String dataUrl, Throwable error) throws Exception {
+        JSONObject pending = new JSONObject();
+        pending.put("id", captureId);
+        pending.put("dataUrl", dataUrl);
+        pending.put("status", "network_pending");
+        pending.put("lastError", diagnosticErrorText(error));
+        pending.put("savedAt", System.currentTimeMillis());
+        byte[] bytes = pending.toString().getBytes(StandardCharsets.UTF_8);
+        try (FileOutputStream output = new FileOutputStream(pendingHandFile(captureId))) {
+            output.write(bytes);
+        }
+        logCaptureDiagnostic(captureId, "NETWORK_PENDING", diagnosticErrorText(error));
     }
 
     private void persistPendingNativeHand(String captureId, String dataUrl, String analysisJson) throws Exception {
@@ -658,9 +706,11 @@ public final class MainActivity extends Activity {
                     text = readUtf8(input);
                 }
                 JSONObject pending = new JSONObject(text);
+                if ("network_pending".equals(pending.optString("status"))) continue;
                 String captureId = pending.getString("id");
                 String dataUrl = pending.getString("dataUrl");
-                String analysisJson = pending.getString("analysisJson");
+                String analysisJson = pending.optString("analysisJson", "");
+                if (analysisJson.isEmpty()) continue;
 
                 webView.post(() -> webView.evaluateJavascript(
                         "(function(){if(window.innerGameReceiveNativeAnalysis){window.innerGameReceiveNativeAnalysis(" +
@@ -677,6 +727,70 @@ public final class MainActivity extends Activity {
     private void acknowledgePendingNativeHand(String captureId) {
         if (captureId == null || captureId.isEmpty()) return;
         try { pendingHandFile(captureId).delete(); } catch (Exception ignored) {}
+    }
+
+
+    private void schedulePendingNetworkRetry(long delayMs) {
+        if (pendingNetworkRetryScheduled) return;
+        pendingNetworkRetryScheduled = true;
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            pendingNetworkRetryScheduled = false;
+            retryPendingNetworkAnalyses();
+        }, Math.max(250L, delayMs));
+    }
+
+    private void retryPendingNetworkAnalyses() {
+        new Thread(() -> {
+            File[] files = getFilesDir().listFiles((dir, name) ->
+                    name.startsWith(PENDING_HAND_PREFIX) && name.endsWith(".json"));
+            if (files == null || files.length == 0) return;
+
+            boolean stillWaiting = false;
+            Arrays.sort(files, Comparator.comparingLong(File::lastModified));
+
+            for (File file : files) {
+                try {
+                    String text;
+                    try (FileInputStream input = new FileInputStream(file)) {
+                        text = readUtf8(input);
+                    }
+                    JSONObject pending = new JSONObject(text);
+                    if (!"network_pending".equals(pending.optString("status"))) continue;
+
+                    String captureId = pending.getString("id");
+                    String dataUrl = pending.getString("dataUrl");
+
+                    try {
+                        JSONObject parsed = analyzeHandNative(dataUrl, captureId);
+                        if (!parsed.optBoolean("isPokerHand", false)) {
+                            file.delete();
+                            cancelAutoCaptureNotification();
+                            continue;
+                        }
+
+                        persistPendingNativeHand(captureId, dataUrl, parsed.toString());
+                        dispatchPendingNativeAnalyses();
+                        notifyAutoCaptureSaved(captureId, parsed.optString("title", "Poker hand"));
+                        logCaptureDiagnostic(captureId, "NETWORK_RETRY_OK", "analysis completed");
+                    } catch (Exception error) {
+                        if (isTransientNetworkFailure(error)) {
+                            stillWaiting = true;
+                            persistPendingNetworkHand(captureId, dataUrl, error);
+                        } else {
+                            JSONObject failed = new JSONObject();
+                            failed.put("__error", diagnosticErrorText(error));
+                            persistPendingNativeHand(captureId, dataUrl, failed.toString());
+                            dispatchPendingNativeAnalyses();
+                            notifyAutoCaptureAnalysisFailed(captureId, "HTTP_ANALYSIS", diagnosticErrorText(error));
+                        }
+                    }
+                } catch (Exception error) {
+                    logCaptureDiagnostic("pending", "NETWORK_RETRY_FILE", diagnosticErrorText(error));
+                }
+            }
+
+            if (stillWaiting) schedulePendingNetworkRetry(4_000L);
+        }, "innergame-pending-network-retry").start();
     }
 
     private void cancelAutoCaptureNotification() {
@@ -719,6 +833,17 @@ public final class MainActivity extends Activity {
                 output.write(line.getBytes(StandardCharsets.UTF_8));
             }
             android.util.Log.e("InnerGameCapture", stage + " | " + truncateDiagnostic(detail));
+        } catch (Exception ignored) {}
+    }
+
+    private void notifyAutoCaptureWaitingForConnection(String captureId) {
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("stage", "waiting");
+            payload.put("title", "Hand captured · waiting for connection");
+            payload.put("body", "Inner Game saved the screenshot and will retry analysis automatically.");
+            payload.put("handId", captureId);
+            showHandNotification(payload.toString());
         } catch (Exception ignored) {}
     }
 
@@ -969,6 +1094,7 @@ public final class MainActivity extends Activity {
             webView.postDelayed(() -> {
                 ensureCapturePermissionsOnOpen();
                 dispatchPendingNativeAnalyses();
+                retryPendingNetworkAnalyses();
             }, 250L);
         }
     }
