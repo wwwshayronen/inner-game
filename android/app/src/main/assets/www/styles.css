@@ -425,3 +425,8 @@ input:focus,textarea:focus,select:focus{border-color:rgba(53,217,138,.65)!import
   .hand-b-pot{grid-column:1/-1;border-top:1px solid var(--line);border-right:0!important}
   .hand-b-table>div:nth-child(2){border-right:0}
 }
+
+
+/* v1.10.1 selected breathing technique contrast fix */
+.breath-workout.selected strong{color:#03130b!important}
+.breath-workout.selected small{color:rgba(3,19,11,.68)!important}
