@@ -468,3 +468,68 @@ input:focus,textarea:focus,select:focus{border-color:rgba(53,217,138,.65)!import
   .session-review-score-grid>div{padding:10px 8px}
   .session-review-score-grid strong{font-size:18px}
 }
+
+
+/* v1.12 saved-hand GTO solver */
+.solver-primary-btn{grid-column:1/-1!important;display:flex!important;align-items:center;justify-content:center;gap:8px}
+.solver-readiness{display:flex;align-items:center;gap:12px;padding:14px 15px;border-radius:16px;margin-bottom:12px;border:1px solid var(--line)}
+.solver-readiness.ready{background:rgba(53,217,138,.075);border-color:rgba(53,217,138,.24)}
+.solver-readiness.needs-review{background:rgba(243,201,103,.075);border-color:rgba(243,201,103,.25)}
+.solver-readiness-icon{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;flex:none;font-weight:900}
+.solver-readiness.ready .solver-readiness-icon{background:var(--accent);color:#03130b}
+.solver-readiness.needs-review .solver-readiness-icon{background:#f3c967;color:#1c1603}
+.solver-readiness strong,.solver-readiness small{display:block}
+.solver-readiness strong{font-size:15px}
+.solver-readiness small{font-size:11px;color:var(--muted);margin-top:3px}
+.solver-missing-card{margin-bottom:12px;color:#e5ddd0;font-size:12px;line-height:1.65}
+.solver-review-card{display:grid;gap:18px}
+.solver-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.solver-field{display:grid;gap:6px;min-width:0}
+.solver-field label{font-size:10px;color:var(--muted);font-weight:750;text-transform:uppercase;letter-spacing:.065em}
+.solver-field input,.solver-field select{min-height:45px;border-radius:12px;padding:10px 11px;font-size:14px}
+.solver-action-editor{padding-top:16px;border-top:1px solid var(--line)}
+.solver-action-editor h3{margin:3px 0 0;font-size:17px}
+.solver-action-editor>p{font-size:10px;color:var(--muted);line-height:1.45;margin:8px 0}
+.solver-action-editor code{color:#c4ceca}
+.solver-action-editor textarea{min-height:190px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.55;white-space:pre}
+.solver-complete-check{display:flex;align-items:flex-start;gap:10px;margin-top:12px;padding:12px;border-radius:13px;background:#0b0f11;border:1px solid var(--line);cursor:pointer}
+.solver-complete-check input{width:19px;height:19px;margin:1px 0 0;accent-color:var(--accent);flex:none}
+.solver-complete-check strong,.solver-complete-check small{display:block}
+.solver-complete-check strong{font-size:12px}.solver-complete-check small{font-size:10px;color:var(--muted);margin-top:3px;line-height:1.4}
+.solver-inspection-notes{padding:11px 12px;border-radius:12px;background:rgba(255,255,255,.025);font-size:10px;color:var(--muted);line-height:1.5}
+.solver-range-assumption{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}
+.solver-range-assumption strong,.solver-range-assumption small{display:block}
+.solver-range-assumption strong{font-size:14px}.solver-range-assumption small{font-size:10px;color:var(--muted);line-height:1.4;margin-top:3px}
+.solver-toggle{width:46px;height:27px;border-radius:999px;padding:3px;background:#252a2d;flex:none;display:flex;align-items:center}
+.solver-toggle i{width:21px;height:21px;border-radius:50%;background:#f5f5f7;display:block;transform:translateX(0);transition:.16s ease}
+.solver-toggle.on{background:var(--accent)}.solver-toggle.on i{transform:translateX(19px)}
+.solver-study-note{display:flex;align-items:flex-start;gap:7px;margin:12px 2px;padding:11px 12px;border:1px solid rgba(90,184,230,.22);background:rgba(90,184,230,.055);border-radius:13px}
+.solver-study-note strong,.solver-study-note span{display:block}.solver-study-note strong{font-size:11px;white-space:nowrap}.solver-study-note span{font-size:10px;color:var(--muted);line-height:1.4}
+.solver-run-btn:disabled{opacity:.38;filter:saturate(.5);cursor:not-allowed}
+.solver-loading-card,.solver-running-card,.solver-error-card{text-align:center;display:grid;justify-items:center;gap:9px;padding:28px 18px!important}
+.solver-loading-card strong,.solver-running-card strong,.solver-error-card strong{font-size:18px}
+.solver-loading-card p,.solver-running-card p,.solver-error-card p{margin:0;color:var(--muted);font-size:12px;line-height:1.5;max-width:440px}
+.solver-spinner{width:34px;height:34px;border-radius:50%;border:3px solid rgba(53,217,138,.18);border-top-color:var(--accent);animation:solverSpin .85s linear infinite}
+@keyframes solverSpin{to{transform:rotate(360deg)}}
+.solver-answer-card{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.solver-answer-card>div{padding:13px;border-radius:13px;background:#0b0f11;border:1px solid var(--line)}
+.solver-answer-card small,.solver-answer-card strong{display:block}
+.solver-answer-card small{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.solver-answer-card strong{font-size:26px;letter-spacing:-.04em;margin-top:6px}
+.solver-answer-card .solver-best-ev{grid-column:1/-1;display:flex;justify-content:space-between;align-items:center}
+.solver-answer-card .solver-best-ev strong{font-size:17px;margin:0}
+.solver-strategy-card,.solver-ev-card,.solver-why-card,.solver-assumptions{margin-top:12px}
+.solver-strategy-row+.solver-strategy-row{margin-top:14px}
+.solver-strategy-row .row{font-size:12px}.solver-strategy-row strong{font-size:13px}
+.solver-bar{height:8px;border-radius:999px;background:#1a2022;overflow:hidden;margin-top:6px}.solver-bar i{display:block;height:100%;background:var(--accent);border-radius:999px}
+.solver-ev-row{padding:10px 0;border-top:1px solid var(--line);font-size:12px}.solver-ev-row:first-of-type{border-top:0}
+.solver-why-card>strong{font-size:15px;line-height:1.4;display:block}.solver-why-card>p{font-size:12px;line-height:1.55;color:#c9d1ce;margin:8px 0 0}
+.solver-facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}.solver-facts span{font-size:9px;padding:6px 8px;border-radius:999px;background:#0b0f11;border:1px solid var(--line);color:#b8c1bd}
+.solver-assumptions{font-size:11px;color:var(--muted);line-height:1.55}
+@media(max-width:520px){
+  .solver-grid{grid-template-columns:1fr 1fr}
+  .solver-field:nth-child(8),.solver-field:nth-child(9){grid-column:1/-1}
+  .solver-study-note{display:grid}
+  .solver-answer-card strong{font-size:23px}
+}
+@media(max-width:380px){.solver-grid{grid-template-columns:1fr}}
