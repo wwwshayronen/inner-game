@@ -204,16 +204,14 @@ public final class MainActivity extends Activity {
         long now = System.currentTimeMillis();
         if (uriText.equals(lastScreenshotUri) && now - lastScreenshotHandledAt < 5000L) return;
 
-        String[] projection = new String[]{
-                MediaStore.Images.Media.DISPLAY_NAME,
-                MediaStore.Images.Media.RELATIVE_PATH,
-                MediaStore.Images.Media.DATE_ADDED
-        };
+        String[] projection = Build.VERSION.SDK_INT >= 29
+                ? new String[]{MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.RELATIVE_PATH, MediaStore.Images.Media.DATE_ADDED}
+                : new String[]{MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED};
         try (Cursor cursor = getContentResolver().query(uri, projection, null, null, null)) {
             if (cursor == null || !cursor.moveToFirst()) return;
             String name = cursor.getString(0);
             String relativePath = Build.VERSION.SDK_INT >= 29 ? cursor.getString(1) : "";
-            long dateAddedSeconds = cursor.getLong(2);
+            long dateAddedSeconds = cursor.getLong(Build.VERSION.SDK_INT >= 29 ? 2 : 1);
             if (!looksLikeScreenshot(name, relativePath)) return;
             if (dateAddedSeconds > 0 && Math.abs((System.currentTimeMillis() / 1000L) - dateAddedSeconds) > 30L) return;
         } catch (Exception ignored) {
