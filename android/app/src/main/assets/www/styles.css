@@ -301,3 +301,69 @@ input:focus,textarea:focus,select:focus{border-color:rgba(53,217,138,.65)!import
   .hands-library-counts{justify-content:flex-start}
   .hand-drop-zone{min-height:72px}
 }
+
+
+/* v1.9.1 hand UX polish */
+.session-hands-destination{cursor:pointer;transition:transform .14s ease,border-color .14s ease,background .14s ease}
+.session-hands-destination:active{transform:scale(.994)}
+.session-hands-destination:hover{border-color:rgba(118,239,187,.28);background:linear-gradient(180deg,rgba(20,42,37,.96),rgba(10,29,25,.98))}
+.session-hands-chevron{font-size:32px;line-height:1;color:var(--accent);font-weight:500}
+.session-hand-preview{display:grid;gap:10px;margin-top:12px}
+.session-hand-preview .captured-hand-card{box-shadow:none;background:rgba(255,255,255,.018)}
+.hands-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:12px}
+.hands-summary>div{padding:13px 12px;border-radius:15px;background:linear-gradient(180deg,rgba(20,38,34,.82),rgba(8,23,20,.92));border:1px solid var(--line)}
+.hands-summary strong{display:block;font-size:22px;letter-spacing:-.035em}
+.hands-summary span{display:block;margin-top:3px;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+.captured-hands-list{display:grid;gap:11px}
+.captured-hand-card{display:grid;grid-template-columns:116px minmax(0,1fr);gap:13px;align-items:stretch;padding:0;overflow:hidden;text-align:left;cursor:pointer}
+.captured-hand-card>img{width:116px;height:100%;min-height:108px;object-fit:cover;background:#050807}
+.captured-hand-copy{padding:13px 14px 13px 0;min-width:0}
+.hand-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
+.hand-card-top strong{font-size:16px;line-height:1.18;letter-spacing:-.02em}
+.hand-status{flex:none;border-radius:999px;padding:4px 8px;font-size:9px;font-weight:850;letter-spacing:.03em;background:rgba(118,239,187,.1);color:var(--accent);border:1px solid rgba(118,239,187,.16)}
+.hand-status.analyzing{color:#f3c967;background:rgba(243,201,103,.08);border-color:rgba(243,201,103,.18)}
+.hand-status.failed{color:var(--danger);background:rgba(255,116,116,.08);border-color:rgba(255,116,116,.18)}
+.captured-hand-copy small{display:block;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.captured-hand-copy p{margin:9px 0 0;color:#c7d1ce;font-size:12px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.hand-open-affordance{display:inline-flex;align-items:center;gap:6px;margin-top:9px;color:var(--accent);font-size:11px;font-weight:800}
+.hand-detail-hero{position:relative;overflow:hidden;padding:0;background:#030605;border-radius:24px}
+.hand-detail-hero::after{content:"";position:absolute;left:0;right:0;bottom:0;height:24%;background:linear-gradient(180deg,transparent,rgba(0,0,0,.52));pointer-events:none}
+.hand-detail-hero img{display:block;width:100%;max-height:520px;object-fit:contain;background:#030605}
+.hand-detail-overlay{position:absolute;left:14px;top:14px;z-index:2}
+.hand-detail-intro{padding:3px 2px 4px}
+.hand-kind{font-size:10px;letter-spacing:.13em;font-weight:850;color:var(--accent);text-transform:uppercase}
+.hand-detail-intro h2{margin:6px 0 0;font-size:clamp(27px,7vw,38px);line-height:1.02;letter-spacing:-.045em}
+.hand-meta-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.hand-meta-chips span{padding:6px 9px;border-radius:999px;background:#0d1714;border:1px solid var(--line);font-size:11px;color:#d8dfdd}
+.hand-cards-panel{display:grid;grid-template-columns:.9fr 1.5fr .7fr;padding:0;overflow:hidden}
+.hand-card-group{padding:15px 14px;border-right:1px solid var(--line)}
+.hand-card-group:last-child{border-right:0}
+.hand-card-group>span{display:block;color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
+.poker-card-row{display:flex;gap:5px;flex-wrap:wrap}
+.poker-card-chip{display:inline-grid;place-items:center;min-width:33px;height:42px;padding:0 7px;border-radius:9px;background:#f7f7f5;color:#0b1110;font-weight:900;font-size:15px;box-shadow:0 4px 14px rgba(0,0,0,.22)}
+.poker-card-chip.red{color:#d72f3e}
+.hand-copy-card{padding:17px 18px!important}
+.hand-copy-card .eyebrow{color:#7f8c88;font-size:10px;letter-spacing:.08em}
+.hand-copy-card p{font-size:16px;line-height:1.47;margin:9px 0 0;color:#eef3f1}
+.hand-detail-footer{display:flex;justify-content:space-between;gap:10px;color:#82908c;font-size:10px;padding:0 2px}
+.hand-detail-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:2px}
+.hand-detail-actions .btn.primary{grid-column:1/-1}
+.hand-detail-actions .btn.ghost{border:1px solid rgba(255,116,116,.16);background:rgba(255,116,116,.035)}
+.hands-library-hero{display:grid;gap:14px}
+.hands-library-hero h2{font-size:29px;margin:3px 0 0;letter-spacing:-.04em}
+.hands-library-hero p{color:var(--muted);margin:7px 0 0;line-height:1.45}
+.hands-library-counts{display:flex;gap:8px;flex-wrap:wrap}
+.hands-library-counts span{background:#0d1714;border:1px solid var(--line);border-radius:12px;padding:8px 10px;color:var(--muted);font-size:11px}
+.hands-library-counts b{color:var(--text);font-size:15px;margin-right:4px}
+.hand-drop-zone{border:1px dashed rgba(118,239,187,.34);background:rgba(118,239,187,.035);border-radius:18px;padding:20px;text-align:center;display:grid;gap:5px}
+.hand-drop-zone strong{font-size:15px}.hand-drop-zone span{color:var(--muted);font-size:11px}
+.hand-drop-zone.dragging{border-color:var(--accent);background:rgba(118,239,187,.09)}
+@media(max-width:520px){
+  .captured-hand-card{grid-template-columns:98px minmax(0,1fr)}
+  .captured-hand-card>img{width:98px;min-height:104px}
+  .hand-cards-panel{grid-template-columns:1fr 1.45fr}
+  .hand-card-group:nth-child(2){border-right:0}
+  .hand-card-group.compact{grid-column:1/-1;border-top:1px solid var(--line);border-right:0}
+  .hand-detail-actions{grid-template-columns:1fr}
+  .hand-detail-actions .btn.primary{grid-column:auto}
+}
