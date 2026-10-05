@@ -554,12 +554,28 @@ function pokerCardChip(card){
   const c=String(card), suit=c.slice(-1).toLowerCase(), red=suit==='h'||suit==='d'||c.includes('♥')||c.includes('♦');
   return `<span class="poker-card-chip ${red?'red':''}">${esc(c)}</span>`;
 }
+
+function handStatusInfo(h){
+  const status=h?.status||'ready';
+  if(status==='analyzing'||status==='pending'||h?.autoCandidate)return {status:'pending',label:'Processing'};
+  if(status==='failed')return {status:'failed',label:'Analysis failed'};
+  if(h?.reviewNeeded)return {status:'review',label:'Review'};
+  return {status:'ready',label:'Saved'};
+}
+function handSessionContext(h){
+  if(!h)return null;
+  if(state.activeSession && (h.sessionId===state.activeSession.id || allSessionHands(state.activeSession).some(x=>x.id===h.id))){
+    return {id:'active',label:'Active session',session:state.activeSession};
+  }
+  const s=state.sessions.find(s=>h.sessionId===s.id || allSessionHands(s).some(x=>x.id===h.id));
+  return s?{id:s.id,label:[s.date,s.game].filter(Boolean).join(' · '),session:s}:null;
+}
 function handDetail(){
   const h=selectedHand();
   if(!h){route='handsLibrary';return handsLibrary();}
-  const status=h.status||'ready';
-  const statusLabel=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review recommended':'Saved';
+  const statusInfo=handStatusInfo(h);
   const title=normalizeCapturedTitle(h,handDisplayTitle(h));
+  const sessionCtx=handSessionContext(h);
   const meta=[h.site,h.blinds||h.stakes].filter(Boolean);
   return appShell(`${header('<span class="accent">Hand</span>','')}
     <section class="hand-b-hero card">
@@ -568,15 +584,21 @@ function handDetail(){
     <section class="hand-b-title">
       <div class="hand-kind">${h.gameType==='tournament'?'TOURNAMENT':'POKER HAND'}</div>
       <h2>${esc(title)}</h2>
-      <div class="hand-b-meta">${meta.map(x=>`<span>${esc(x)}</span>`).join('')}<span>${new Date(h.capturedAt||Date.now()).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span><span class="hand-status ${esc(status)}">${esc(statusLabel)}</span></div>
+      <div class="hand-b-meta">
+        ${meta.map(x=>`<span>${esc(x)}</span>`).join('')}
+        <span>${new Date(h.capturedAt||Date.now()).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
+        ${sessionCtx?`<span>${esc(sessionCtx.label)}</span>`:''}
+        <span class="hand-status ${esc(statusInfo.status)}">${esc(statusInfo.label)}</span>
+      </div>
     </section>
+    ${statusInfo.status==='pending'?'<div class="hand-processing-strip"><span class="processing-dot"></span><div><strong>Processing hand</strong><small>This will update automatically.</small></div></div>':''}
     <section class="card pad hand-notes-card">
       <div class="row between"><small class="eyebrow">NOTES</small><span class="notes-saved-hint" id="notesSavedHint"></span></div>
-      <textarea id="handNotes" aria-label="Hand notes" placeholder="Add your notes about this hand…">${esc(h.notes||'')}</textarea>
+      <textarea id="handNotes" aria-label="Hand notes" placeholder="What made this hand worth saving?">${esc(h.notes||'')}</textarea>
       <button class="btn primary hand-notes-save" data-save-hand-notes="${esc(h.id)}">Save Notes</button>
     </section>
     <div class="hand-detail-actions">
-      ${status==='failed'?`<button class="btn primary" data-retry-hand="${esc(h.id)}">Retry Analysis</button>`:''}
+      ${statusInfo.status==='failed'?`<button class="btn primary" data-retry-hand="${esc(h.id)}">Retry Analysis</button>`:''}
       <button class="btn secondary" data-edit-hand="${esc(h.id)}">Edit Details</button>
       <button class="btn ghost danger-text" data-delete-hand="${esc(h.id)}">Delete Hand</button>
     </div>`,'sessions');
@@ -612,29 +634,38 @@ function handsLibrary(){
 function sessionHands(){
   const target=selectedSessionHandsId==='active'?state.activeSession:state.sessions.find(s=>s.id===selectedSessionHandsId);
   if(!target){route='sessions';return sessions();}
-  const hands=allSessionHands(target).filter(h=>!h.autoCandidate);
+  const all=allSessionHands(target);
+  const processing=all.filter(h=>h.autoCandidate||['analyzing','pending'].includes(h.status));
+  const hands=all.filter(h=>!h.autoCandidate&&!['analyzing','pending'].includes(h.status));
+  const noted=hands.filter(h=>(h.notes||'').trim()).length;
   const subtitle=selectedSessionHandsId==='active'
-    ? 'Hands captured during your current session.'
+    ? [target.stakes,target.room].filter(Boolean).join(' · ')||'Current session'
     : [target.date,target.game,target.room].filter(Boolean).join(' · ');
   return appShell(`${header('Session <span class="accent">Hands</span>',subtitle)}
-    <div class="captured-hands-list session-hands-list">${hands.length?hands.slice().reverse().map(h=>handCard(h,false,false)).join(''):'<div class="notice"><strong>No hands yet.</strong><br>Poker screenshots captured during this session will appear here automatically.</div>'}</div>`,'sessions');
+    <section class="hands-summary session-hands-summary">
+      <div><strong>${hands.length}</strong><span>Saved</span></div>
+      <div><strong>${noted}</strong><span>With notes</span></div>
+      <div class="${processing.length?'processing':''}"><strong>${processing.length}</strong><span>Processing</span></div>
+    </section>
+    ${processing.length?`<div class="session-processing-row"><span class="processing-dot"></span><div><strong>Processing ${processing.length} screenshot${processing.length===1?'':'s'}</strong><small>They’ll appear here automatically.</small></div></div>`:''}
+    <div class="session-hands-section-head"><strong>${hands.length?'Saved hands':'Hands'}</strong><span>${hands.length?'Newest first':''}</span></div>
+    <div class="captured-hands-list session-hands-list">${hands.length?hands.slice().sort((a,b)=>(b.capturedAt||0)-(a.capturedAt||0)).map(h=>handCard(h,false,false)).join(''):'<div class="notice"><strong>No saved hands yet.</strong><br>Take a poker screenshot during the session and it will be added automatically.</div>'}</div>`,'sessions');
 }
 function handCard(h,showScope=false,libraryMode=false){
-  const status=h.status||'ready';
-  const statusText=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review':'Saved';
+  const statusInfo=handStatusInfo(h);
   const title=normalizeCapturedTitle(h,handDisplayTitle(h));
-  const cards=(h.heroCards||[]).map(pokerCardChip).join('');
   const scope=showScope?h._sessionLabel:'';
+  const note=(h.notes||'').trim();
   const attr=libraryMode&&h._scope==='session'
     ? `data-open-library-session="${esc(h._sessionActive?'active':h._sessionId||'')}"`
     : `data-open-hand="${esc(h.id)}"`;
-  return `<article class="card captured-hand-card option-a ${esc(status)}" ${attr} role="button" tabindex="0" aria-label="${libraryMode&&h._scope==='session'?'Open session hands':'Open '+esc(title)}">
+  return `<article class="card captured-hand-card option-a ${esc(statusInfo.status)}" ${attr} role="button" tabindex="0" aria-label="${libraryMode&&h._scope==='session'?'Open session hands':'Open '+esc(title)}">
     <img data-hand-image-key="${esc(h.imageKey)}" alt="">
     <div class="captured-hand-copy">
       <div class="hand-card-top"><strong>${esc(title)}</strong><time>${esc(handLibraryTime(h))}</time></div>
       <small>${esc([scope,h.site,h.blinds||h.stakes].filter(Boolean).join(' · ')||'Poker hand')}</small>
-      ${cards?`<div class="mini-card-row">${cards}</div>`:''}
-      <div class="hand-a-bottom"><span class="hand-status ${esc(status)}">${esc(statusText)}</span><span class="hand-open-affordance">${libraryMode&&h._scope==='session'?'Open session':'View hand'} <b>›</b></span></div>
+      <p class="hand-note-preview ${note?'':'empty-note'}">${esc(note||'Add a note to remember why this hand mattered.')}</p>
+      <div class="hand-a-bottom"><span class="hand-status ${esc(statusInfo.status)}">${esc(statusInfo.label)}</span><span class="hand-open-affordance">${libraryMode&&h._scope==='session'?'Open session':'Open'} <b>›</b></span></div>
     </div>
   </article>`;
 }
@@ -945,8 +976,16 @@ function logSession(){ const a=state.activeSession; const endNow=Date.now(); con
   <form id="logForm" class="stack">
    <section class="card pad stack"><div class="field"><label>Game / Stakes</label><input name="game" type="text" list="knownGamesLog" data-game-input value="${esc(a?.stakes||state.prep.stakes||'NL100')}" required autocomplete="off"><datalist id="knownGamesLog">${gameOptionsHTML()}</datalist></div><div class="field"><label>Room / Site</label><input name="room" type="text" list="knownRoomsLog" data-room-input value="${esc(a?.room||state.prep.room||'')}" autocomplete="off"><datalist id="knownRoomsLog">${roomOptionsHTML()}</datalist></div><div class="date-time-grid"><div class="field span-2"><label>Started</label><input name="startAt" type="datetime-local" value="${localDateTimeValue(startMs)}" required></div><div class="field span-2"><label>Ended</label><input name="endAt" type="datetime-local" value="${localDateTimeValue(endMs)}" required></div></div><div class="money-grid"><div class="field"><label>Started with ($)</label><input name="started" type="number" min="0" step="1" inputmode="decimal" value="${esc(a?.startedAmount??'')}" required></div><div class="field"><label>Finished with ($)</label><input name="finished" type="number" min="0" step="1" inputmode="decimal" required></div></div></section>
    <section class="card pad"><div class="section-title">Goals review</div><div class="saved-goals">${(a?.prep?.goals||state.prep.goals||[]).filter(Boolean).map(g=>`<div><span>✓</span>${esc(g)}</div>`).join('')||'<div class="session-meta">No goals were set.</div>'}</div></section>
-   <section class="card pad"><div class="section-title">Inner Game Review</div>${rangeRow('Process','process',7)}${rangeRow('Self-judgment','judgment',4)}${rangeRow('Tilt','tilt',3)}${rangeRow('Trust','trust',7)}<div class="field top-gap"><label>Non-judgmental observation</label><textarea name="note" placeholder="What happened? What will you repeat or adjust?"></textarea></div></section>
-   <button class="btn primary" type="submit">Save Session</button>
+   <section class="card pad"><div class="section-title">Inner Game Review</div>${rangeRow('Process','process',7)}${rangeRow('Self-judgment','judgment',4)}${rangeRow('Tilt','tilt',3)}${rangeRow('Trust','trust',7)}</section>
+   <section class="card pad session-reflection-form">
+     <div class="section-title">Session reflection</div>
+     <p class="session-reflection-intro">Three quick prompts. Keep them concrete.</p>
+     <div class="field"><label>Best decision</label><textarea name="bestDecision" placeholder="A decision or moment you want to repeat."></textarea></div>
+     <div class="field"><label>Toughest moment</label><textarea name="toughestSpot" placeholder="Where did your process slip or get tested?"></textarea></div>
+     <div class="field"><label>One takeaway</label><textarea name="takeaway" placeholder="What do you want to carry into the next session?"></textarea></div>
+     <div class="field"><label>Session note <span class="optional-label">optional</span></label><textarea name="note" placeholder="Anything else worth remembering."></textarea></div>
+   </section>
+   <button class="btn primary" type="submit">Save Review</button>
   </form>`,'sessions'); }
 
 
@@ -1011,8 +1050,21 @@ function sessionRow(s){ const when=s.startAt?new Date(s.startAt).toLocaleString(
 function sessionDetail(){
   const s=state.sessions.find(x=>x.id===editingSessionId); if(!s){route='sessions';return sessions();}
   const hands=allSessionHands(s).filter(h=>!h.autoCandidate);
-  return appShell(`${header('Session <span class="accent">Details</span>',`${esc(s.date)} · ${esc(s.game)}`)}
-    <section class="card pad session-detail-top"><div class="row between"><div><small class="eyebrow">RESULT</small><strong class="session-detail-pnl ${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</strong></div><div><small class="eyebrow">PROCESS</small><strong>${s.process}/10</strong></div></div><div class="session-meta top-gap">${esc([s.room,s.state,s.durationMs?formatDuration(s.durationMs):null].filter(Boolean).join(' · '))}</div></section>
+  const reflection=[
+    ['Best decision',s.bestDecision],
+    ['Toughest moment',s.toughestSpot],
+    ['One takeaway',s.takeaway]
+  ].filter(([,v])=>(v||'').trim());
+  return appShell(`${header('Session <span class="accent">Review</span>',`${esc(s.date)} · ${esc(s.game)}`)}
+    <section class="card pad session-detail-top">
+      <div class="session-review-score-grid">
+        <div><small>RESULT</small><strong class="${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</strong></div>
+        <div><small>PROCESS</small><strong>${s.process}/10</strong></div>
+        <div><small>TILT</small><strong>${s.tilt}/10</strong></div>
+      </div>
+      <div class="session-meta top-gap">${esc([s.room,s.state,s.durationMs?formatDuration(s.durationMs):null].filter(Boolean).join(' · '))}</div>
+    </section>
+    ${reflection.length||s.note?`<section class="card pad session-reflection-card"><div class="section-title">What to remember</div>${reflection.map(([label,value])=>`<div class="reflection-item"><small>${esc(label)}</small><p>${esc(value)}</p></div>`).join('')}${s.note?`<div class="reflection-item note"><small>Session note</small><p>${esc(s.note)}</p></div>`:''}</section>`:''}
     <section class="card pad session-hands-destination" data-open-session-hands="${esc(s.id)}" role="button" tabindex="0"><div class="row between"><div><div class="section-title">Saved Hands</div><div class="session-meta">${hands.length} captured during this session</div></div>${hands.length?'<span class="session-hands-chevron">›</span>':''}</div><div class="session-hand-preview">${hands.slice(-3).reverse().map(h=>handCard(h)).join('')||'<div class="empty">No hands captured in this session.</div>'}</div></section>
     <button class="btn secondary" data-edit-session="${esc(s.id)}">Edit Session</button>`,'sessions');
 }
@@ -1023,7 +1075,8 @@ function editSession(){
   return appShell(`${header('Edit <span class="accent">Session</span>','Correct anything that changed.')}
   <form id="editSessionForm" class="stack">
    <section class="card pad stack"><div class="field"><label>Game / Stakes</label><input name="game" type="text" list="knownGamesEdit" data-game-input value="${esc(s.game)}" required autocomplete="off"><datalist id="knownGamesEdit">${gameOptionsHTML()}</datalist></div><div class="field"><label>Room / Site</label><input name="room" type="text" list="knownRoomsEdit" data-room-input value="${esc(s.room||'')}" autocomplete="off"><datalist id="knownRoomsEdit">${roomOptionsHTML()}</datalist></div><div class="field"><label>Started</label><input name="startAt" type="datetime-local" value="${localDateTimeValue(startMs)}" required></div><div class="field"><label>Ended</label><input name="endAt" type="datetime-local" value="${localDateTimeValue(endMs)}" required></div><div class="money-grid"><div class="field"><label>Started with ($)</label><input name="started" type="number" min="0" step="1" value="${esc(s.started)}" required></div><div class="field"><label>Finished with ($)</label><input name="finished" type="number" min="0" step="1" value="${esc(s.finished)}" required></div></div></section>
-   <section class="card pad"><div class="section-title">Inner Game Review</div>${rangeRow('Process','edit-process',s.process)}${rangeRow('Self-judgment','edit-judgment',s.judgment)}${rangeRow('Tilt','edit-tilt',s.tilt)}${rangeRow('Trust','edit-trust',s.trust)}<div class="field top-gap"><label>Non-judgmental observation</label><textarea name="note">${esc(s.note||'')}</textarea></div></section>
+   <section class="card pad"><div class="section-title">Inner Game Review</div>${rangeRow('Process','edit-process',s.process)}${rangeRow('Self-judgment','edit-judgment',s.judgment)}${rangeRow('Tilt','edit-tilt',s.tilt)}${rangeRow('Trust','edit-trust',s.trust)}</section>
+   <section class="card pad session-reflection-form"><div class="section-title">Session reflection</div><div class="field"><label>Best decision</label><textarea name="bestDecision">${esc(s.bestDecision||'')}</textarea></div><div class="field"><label>Toughest moment</label><textarea name="toughestSpot">${esc(s.toughestSpot||'')}</textarea></div><div class="field"><label>One takeaway</label><textarea name="takeaway">${esc(s.takeaway||'')}</textarea></div><div class="field"><label>Session note</label><textarea name="note">${esc(s.note||'')}</textarea></div></section>
    <button class="btn primary" type="submit">Save Changes</button><button class="btn ghost danger-text" type="button" data-delete-session="${esc(s.id)}">Delete Session</button>
   </form>${sessionDeleteModal()}`,'sessions');
 }
@@ -1096,8 +1149,8 @@ function bind(){
     const room=normalizeRoomName(fd.get('room')); rememberGame(fd.get('game')); rememberRoom(room);
     const completedSessionId=state.activeSession?.id||crypto.randomUUID?.()||String(Date.now());
     const completedHands=allSessionHands(state.activeSession).map(h=>({...h,sessionId:completedSessionId}));
-    state.sessions.push({id:completedSessionId,date:localDateValue(startAt),startAt,endAt,room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,state:scoreState,note:fd.get('note'),prep:mental||null,durationMs:endAt-startAt,hands:completedHands});
-    state.activeSession=null; save(); cancelBreakReminders(); navigate('sessions');
+    state.sessions.push({id:completedSessionId,date:localDateValue(startAt),startAt,endAt,room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,state:scoreState,note:fd.get('note'),bestDecision:fd.get('bestDecision'),toughestSpot:fd.get('toughestSpot'),takeaway:fd.get('takeaway'),prep:mental||null,durationMs:endAt-startAt,hands:completedHands});
+    state.activeSession=null; save(); cancelBreakReminders(); editingSessionId=completedSessionId; navigate('sessionDetail');
   };
   const sound=document.getElementById('breathSound'); if(sound)sound.onclick=()=>{breathSoundEnabled=!breathSoundEnabled; if(breathSoundEnabled)ensureBreathAudio(); render();};
   document.querySelectorAll('[data-edit-session]').forEach(el=>el.onclick=()=>{editingSessionId=el.dataset.editSession;navigate('editSession');});
@@ -1112,7 +1165,7 @@ function bind(){
   const editForm=document.getElementById('editSessionForm'); if(editForm)editForm.onsubmit=e=>{
     e.preventDefault(); const item=state.sessions.find(x=>x.id===editingSessionId); if(!item)return navigate('sessions'); const fd=new FormData(editForm),started=Number(fd.get('started')),finished=Number(fd.get('finished'));
     const process=Number(document.querySelector('[data-range="edit-process"]')?.value||item.process),judgment=Number(document.querySelector('[data-range="edit-judgment"]')?.value||item.judgment),tilt=Number(document.querySelector('[data-range="edit-tilt"]')?.value||item.tilt),trust=Number(document.querySelector('[data-range="edit-trust"]')?.value||item.trust);
-    const startAt=parseLocalDateTime(fd.get('startAt')), endAt=parseLocalDateTime(fd.get('endAt')); if(!startAt||!endAt||endAt<startAt)return; const room=normalizeRoomName(fd.get('room')); rememberGame(fd.get('game')); rememberRoom(room); Object.assign(item,{date:localDateValue(startAt),startAt,endAt,durationMs:endAt-startAt,room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,note:fd.get('note')}); item.state=tilt>=8?'Tilted':(item.prep?.noise??5)<=3&&tilt<=4?'Calm':trust>=7?'Focused':'Tense'; save(); editingSessionId=null; navigate('sessions');
+    const startAt=parseLocalDateTime(fd.get('startAt')), endAt=parseLocalDateTime(fd.get('endAt')); if(!startAt||!endAt||endAt<startAt)return; const room=normalizeRoomName(fd.get('room')); rememberGame(fd.get('game')); rememberRoom(room); Object.assign(item,{date:localDateValue(startAt),startAt,endAt,durationMs:endAt-startAt,room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,note:fd.get('note'),bestDecision:fd.get('bestDecision'),toughestSpot:fd.get('toughestSpot'),takeaway:fd.get('takeaway')}); item.state=tilt>=8?'Tilted':(item.prep?.noise??5)<=3&&tilt<=4?'Calm':trust>=7?'Focused':'Tense'; save(); editingSessionId=null; navigate('sessions');
   };
   document.querySelectorAll('[data-money-range]').forEach(el=>el.onclick=()=>{moneyRange=el.dataset.moneyRange;render();});
   const moneyGameFilter=document.getElementById('moneyGameFilter'); if(moneyGameFilter)moneyGameFilter.onchange=()=>{moneyGame=moneyGameFilter.value;render();};
