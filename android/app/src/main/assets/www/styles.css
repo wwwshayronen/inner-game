@@ -274,3 +274,30 @@ input:focus,textarea:focus,select:focus{border-color:rgba(53,217,138,.65)!import
 .hand-detail-copy p{margin:6px 0 0;color:#d6d9dc;font-size:13px;line-height:1.45}
 .hand-captured-at{margin-top:16px;color:#747b81;font-size:11px}
 @media(max-width:420px){.hand-facts{grid-template-columns:1fr 1fr}.hand-facts>div:last-child{grid-column:1/-1}}
+
+
+/* v1.9 unified hand library */
+.library-switch{display:grid;grid-template-columns:1fr 1fr;background:#0b0e10;border:1px solid var(--line);border-radius:14px;padding:4px;margin:-2px 0 14px}
+.library-switch button{height:38px;border:0;border-radius:10px;background:transparent;color:#8f959b;font-weight:750}
+.library-switch button.active{background:#20262a;color:#f5f5f7}
+.hands-library-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:16px}
+.hands-library-hero small{font-size:10px;letter-spacing:.12em;color:var(--accent);font-weight:850}
+.hands-library-hero h2{margin:4px 0 5px;font-size:30px;letter-spacing:-.045em}
+.hands-library-hero p{margin:0;color:var(--muted);font-size:12px;max-width:520px;line-height:1.45}
+.hands-library-counts{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.hands-library-counts span{padding:8px 10px;border-radius:12px;background:#111619;border:1px solid var(--line);font-size:10px;color:#aeb4bb}
+.hands-library-counts b{display:block;color:#fff;font-size:16px;margin-bottom:2px}
+.hand-drop-zone{margin:12px 0;border:1px dashed #3b474d;border-radius:16px;min-height:82px;padding:16px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;background:#0b0f11;transition:.16s ease}
+.hand-drop-zone strong{font-size:13px}.hand-drop-zone span{font-size:10px;color:var(--muted);margin-top:5px}.hand-drop-zone.dragging{border-color:var(--accent);background:rgba(53,217,138,.06);transform:scale(.997)}
+.hand-filter-pills{display:flex;gap:6px;overflow:auto;margin:2px 0 12px;padding-bottom:2px}
+.hand-filter-pills button{height:34px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:#0d1113;color:#8f959b;font-size:11px;font-weight:750;white-space:nowrap}
+.hand-filter-pills button.active{background:#1d2529;color:#fff;border-color:#303b40}
+.session-detail-top .session-detail-pnl{display:block;font-size:32px;letter-spacing:-.05em;margin-top:5px}
+.session-hand-preview{display:grid;gap:9px;margin-top:12px}
+.session-row[role="button"]{cursor:pointer}
+.session-row[role="button"]:active{background:#111518}
+@media(max-width:520px){
+  .hands-library-hero{align-items:flex-start;flex-direction:column}
+  .hands-library-counts{justify-content:flex-start}
+  .hand-drop-zone{min-height:72px}
+}
