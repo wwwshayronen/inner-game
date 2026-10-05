@@ -357,7 +357,61 @@ function removeCapturedHand(id){
   state.generalHands=generalHands().filter(h=>h.id!==id);
   save();
 }
+async function saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson){
+  let parsed={};
+  try{ parsed=JSON.parse(analysisJson||'{}'); }catch{ parsed={__error:'Invalid analysis response'}; }
+
+  const failed=Boolean(parsed.__error);
+  const hand={
+    id,
+    source:'android_auto',
+    capturedAt:Date.now(),
+    imageKey:'hand:'+id,
+    status:failed?'failed':'ready',
+    reviewNeeded:failed,
+    title:failed?'Captured hand':normalizeCapturedTitle(parsed,parsed.title||'Captured hand'),
+    description:failed?'Screenshot saved. Analysis failed — tap Retry.':(parsed.description||''),
+    confidence:Number(parsed.confidence)||0,
+    heroCards:Array.isArray(parsed.heroCards)?parsed.heroCards:[],
+    board:Array.isArray(parsed.board)?parsed.board:[],
+    uncertainFields:Array.isArray(parsed.uncertainFields)?parsed.uncertainFields:[],
+    autoCandidate:false,
+    error:failed?String(parsed.__error||'Analysis failed'):''
+  };
+
+  if(!failed){
+    Object.assign(hand,parsed,{
+      id,
+      source:'android_auto',
+      capturedAt:hand.capturedAt,
+      imageKey:hand.imageKey,
+      title:normalizeCapturedTitle(parsed,hand.title),
+      tournamentName:cleanVisibleTournamentText(parsed.tournamentName||parsed.visibleEventText||''),
+      autoCandidate:false,
+      status:'ready',
+      error:'',
+      reviewNeeded:false
+    });
+  }
+
+  try{
+    await storeHandImage(hand.imageKey,dataUrl);
+    saveCapturedHand(hand);
+    refreshCaptureUi();
+    if(failed) captureToast('Screenshot saved · analysis failed','error');
+    else captureToast('Hand saved ✓');
+    nativeCall('ackNativeAnalysis',{id});
+  }catch(error){
+    console.error(error);
+    // Do not acknowledge: Android keeps the pending result and retries on resume.
+  }
+}
+
 window.innerGameReceiveScreenshot=(dataUrl,source='native')=>analyzeCapturedScreenshot(dataUrl,source);
+window.innerGameReceiveNativeAnalysis=(id,dataUrl,analysisJson)=>{
+  saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson);
+  return true;
+};
 window.innerGameOpenHand=(id)=>{
   const hand=findHandRecord(id);
   if(!hand)return false;
