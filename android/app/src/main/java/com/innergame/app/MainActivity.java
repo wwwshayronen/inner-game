@@ -13,6 +13,8 @@ import android.content.ContentUris;
 import android.database.ContentObserver;
 import android.database.Cursor;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Handler;
@@ -34,7 +36,17 @@ import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkManager;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import org.json.JSONObject;
@@ -44,6 +56,8 @@ public final class MainActivity extends Activity {
     private static final int MEDIA_PERMISSION_REQUEST = 43;
     private static final int MAX_BREAK_REMINDERS = 24;
     private static final String HAND_CHANNEL_ID = "hand_capture_fast_v2";
+    private static final String HAND_ANALYSIS_URL = "https://inner-game-production.up.railway.app/analyze-hand";
+    private static final String PENDING_HAND_PREFIX = "pending_hand_";
     private WebView webView;
     private String pendingScreenshotDataUrl;
     private String pendingHandId;
@@ -97,6 +111,7 @@ public final class MainActivity extends Activity {
                 super.onPageFinished(view, url);
                 dispatchPendingScreenshot();
                 dispatchPendingHandOpen();
+                dispatchPendingNativeAnalyses();
             }
         });
         handleIncomingIntent(getIntent());
@@ -406,66 +421,221 @@ public final class MainActivity extends Activity {
         final Uri screenshotUri = resolveRecentScreenshotUri(changedUri);
         if (screenshotUri == null) return;
 
-        final long id = mediaId(screenshotUri);
+        final long mediaId = mediaId(screenshotUri);
         final String uriText = screenshotUri.toString();
         final long now = System.currentTimeMillis();
-        if ((id >= 0 && id == lastScreenshotMediaId && now - lastScreenshotHandledAt < 15_000L)
+        if ((mediaId >= 0 && mediaId == lastScreenshotMediaId && now - lastScreenshotHandledAt < 15_000L)
                 || (uriText.equals(lastScreenshotUri) && now - lastScreenshotHandledAt < 15_000L)) {
             return;
         }
 
-        // Mark and notify before any image decoding/compression/network work.
-        lastScreenshotMediaId = id;
+        final String captureId = UUID.randomUUID().toString();
+
+        // The first notification is intentionally emitted before decode, resize or network I/O.
+        lastScreenshotMediaId = mediaId;
         lastScreenshotUri = uriText;
         lastScreenshotHandledAt = now;
         notifyAutoCaptureDetected();
 
         new Thread(() -> {
+            String dataUrl = null;
             try {
-                String dataUrl = readImageDataUrlWhenReady(screenshotUri);
-                if (dataUrl != null) {
-                    dispatchScreenshotData(dataUrl, "android_auto", null);
-                } else {
+                dataUrl = readCompactImageDataUrlWhenReady(screenshotUri);
+                if (dataUrl == null) {
                     notifyAutoCaptureReadFailed();
+                    return;
                 }
-            } catch (Exception ignored) {
-                notifyAutoCaptureReadFailed();
+
+                JSONObject parsed = analyzeHandNative(dataUrl);
+                if (!parsed.optBoolean("isPokerHand", false)) {
+                    cancelAutoCaptureNotification();
+                    return;
+                }
+
+                persistPendingNativeHand(captureId, dataUrl, parsed.toString());
+                dispatchPendingNativeAnalyses();
+                notifyAutoCaptureSaved(captureId, parsed.optString("title", "Poker hand"));
+            } catch (Exception error) {
+                try {
+                    if (dataUrl != null) {
+                        JSONObject failed = new JSONObject();
+                        failed.put("__error", String.valueOf(error.getMessage() == null ? "Analysis request failed" : error.getMessage()));
+                        persistPendingNativeHand(captureId, dataUrl, failed.toString());
+                        dispatchPendingNativeAnalyses();
+                    }
+                } catch (Exception ignored) {}
+                notifyAutoCaptureAnalysisFailed(captureId);
             }
-        }, "innergame-screenshot-import").start();
+        }, "innergame-native-hand-analysis").start();
     }
 
-    private String readImageDataUrlWhenReady(Uri uri) throws Exception {
+    private String readCompactImageDataUrlWhenReady(Uri uri) throws Exception {
         // MediaStore can fire before the screenshot file is fully committed.
-        // Wait only as long as needed; notification has already been sent.
         for (int attempt = 0; attempt < 6; attempt++) {
-            if (attempt > 0) Thread.sleep(70L * attempt);
+            if (attempt > 0) Thread.sleep(60L * attempt);
             if (!mediaItemReady(uri)) continue;
-            String dataUrl = readImageDataUrl(uri);
+            String dataUrl = compactImageDataUrl(uri);
             if (dataUrl != null && dataUrl.length() > 6000) return dataUrl;
         }
-        if (Build.VERSION.SDK_INT < 29 || mediaItemReady(uri)) {
-            return readImageDataUrl(uri);
-        }
+        if (Build.VERSION.SDK_INT < 29 || mediaItemReady(uri)) return compactImageDataUrl(uri);
         return null;
     }
 
-    private String readImageDataUrl(Uri uri) throws Exception {
-        try (InputStream input = getContentResolver().openInputStream(uri);
-             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+    private String compactImageDataUrl(Uri uri) throws Exception {
+        Bitmap bitmap;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
             if (input == null) return null;
+            bitmap = BitmapFactory.decodeStream(input);
+        }
+        if (bitmap == null) return null;
+
+        final int maxDimension = 1120;
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        Bitmap outputBitmap = bitmap;
+        int largest = Math.max(width, height);
+        if (largest > maxDimension) {
+            float scale = maxDimension / (float) largest;
+            int scaledWidth = Math.max(1, Math.round(width * scale));
+            int scaledHeight = Math.max(1, Math.round(height * scale));
+            outputBitmap = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true);
+        }
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        outputBitmap.compress(Bitmap.CompressFormat.JPEG, 74, output);
+        if (outputBitmap != bitmap) outputBitmap.recycle();
+        bitmap.recycle();
+
+        byte[] bytes = output.toByteArray();
+        if (bytes.length < 4096) return null;
+        return "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
+    }
+
+    private JSONObject analyzeHandNative(String dataUrl) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("imageDataUrl", dataUrl);
+        body.put("context", new JSONObject());
+        byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
+
+        Exception lastError = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) new URL(HAND_ANALYSIS_URL).openConnection();
+                connection.setRequestMethod("POST");
+                connection.setConnectTimeout(8_000);
+                connection.setReadTimeout(22_000);
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json");
+                connection.setRequestProperty("Accept", "application/json");
+                connection.setFixedLengthStreamingMode(payload.length);
+
+                try (OutputStream output = connection.getOutputStream()) {
+                    output.write(payload);
+                }
+
+                int status = connection.getResponseCode();
+                InputStream responseStream = status >= 200 && status < 300
+                        ? connection.getInputStream()
+                        : connection.getErrorStream();
+                String responseBody = readUtf8(responseStream);
+                if (status >= 200 && status < 300) return new JSONObject(responseBody);
+                lastError = new IllegalStateException("Analysis HTTP " + status);
+            } catch (Exception error) {
+                lastError = error;
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+            if (attempt == 0) Thread.sleep(180L);
+        }
+        throw lastError == null ? new IllegalStateException("Analysis request failed") : lastError;
+    }
+
+    private String readUtf8(InputStream input) throws Exception {
+        if (input == null) return "";
+        try (InputStream stream = input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[16_384];
             int read;
-            int total = 0;
-            while ((read = input.read(buffer)) != -1) {
-                total += read;
-                if (total > 14_000_000) return null;
-                output.write(buffer, 0, read);
-            }
-            if (total < 4096) return null;
-            String mime = getContentResolver().getType(uri);
-            if (mime == null || !mime.startsWith("image/")) mime = "image/png";
-            return "data:" + mime + ";base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+            while ((read = stream.read(buffer)) != -1) output.write(buffer, 0, read);
+            return output.toString(StandardCharsets.UTF_8.name());
         }
+    }
+
+    private File pendingHandFile(String captureId) {
+        return new File(getFilesDir(), PENDING_HAND_PREFIX + captureId + ".json");
+    }
+
+    private void persistPendingNativeHand(String captureId, String dataUrl, String analysisJson) throws Exception {
+        JSONObject pending = new JSONObject();
+        pending.put("id", captureId);
+        pending.put("dataUrl", dataUrl);
+        pending.put("analysisJson", analysisJson);
+        byte[] bytes = pending.toString().getBytes(StandardCharsets.UTF_8);
+        try (FileOutputStream output = new FileOutputStream(pendingHandFile(captureId))) {
+            output.write(bytes);
+        }
+    }
+
+    private void dispatchPendingNativeAnalyses() {
+        if (webView == null) return;
+        File[] files = getFilesDir().listFiles((dir, name) ->
+                name.startsWith(PENDING_HAND_PREFIX) && name.endsWith(".json"));
+        if (files == null || files.length == 0) return;
+        Arrays.sort(files, Comparator.comparingLong(File::lastModified));
+
+        for (File file : files) {
+            try {
+                String text;
+                try (FileInputStream input = new FileInputStream(file)) {
+                    text = readUtf8(input);
+                }
+                JSONObject pending = new JSONObject(text);
+                String captureId = pending.getString("id");
+                String dataUrl = pending.getString("dataUrl");
+                String analysisJson = pending.getString("analysisJson");
+
+                webView.post(() -> webView.evaluateJavascript(
+                        "(function(){if(window.innerGameReceiveNativeAnalysis){window.innerGameReceiveNativeAnalysis(" +
+                                JSONObject.quote(captureId) + "," +
+                                JSONObject.quote(dataUrl) + "," +
+                                JSONObject.quote(analysisJson) +
+                                ");return true;}return false;})()",
+                        null
+                ));
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void acknowledgePendingNativeHand(String captureId) {
+        if (captureId == null || captureId.isEmpty()) return;
+        try { pendingHandFile(captureId).delete(); } catch (Exception ignored) {}
+    }
+
+    private void cancelAutoCaptureNotification() {
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) manager.cancel(6100);
+    }
+
+    private void notifyAutoCaptureSaved(String captureId, String title) {
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("stage", "saved");
+            payload.put("title", "Hand saved");
+            payload.put("body", title == null || title.isEmpty() ? "Poker hand analyzed and saved." : title + " · Saved to Inner Game.");
+            payload.put("handId", captureId);
+            showHandNotification(payload.toString());
+        } catch (Exception ignored) {}
+    }
+
+    private void notifyAutoCaptureAnalysisFailed(String captureId) {
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("stage", "failed");
+            payload.put("title", "Hand analysis failed");
+            payload.put("body", "The screenshot is saved in Inner Game. Tap to retry analysis.");
+            payload.put("handId", captureId);
+            showHandNotification(payload.toString());
+        } catch (Exception ignored) {}
     }
 
     @Override
@@ -681,6 +851,14 @@ public final class MainActivity extends Activity {
             final boolean finalEnabled = enabled;
             runOnUiThread(() -> MainActivity.this.setAutoScreenshotEnabled(finalEnabled));
         }
+
+        @JavascriptInterface
+        public void ackNativeAnalysis(String payload) {
+            try {
+                String captureId = new JSONObject(payload).optString("id", "");
+                runOnUiThread(() -> MainActivity.this.acknowledgePendingNativeHand(captureId));
+            } catch (Exception ignored) {}
+        }
     }
 
     @Override
@@ -693,7 +871,10 @@ public final class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (webView != null) {
-            webView.postDelayed(this::ensureCapturePermissionsOnOpen, 250L);
+            webView.postDelayed(() -> {
+                ensureCapturePermissionsOnOpen();
+                dispatchPendingNativeAnalyses();
+            }, 250L);
         }
     }
 
