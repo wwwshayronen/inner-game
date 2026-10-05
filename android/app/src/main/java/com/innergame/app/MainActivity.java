@@ -853,8 +853,8 @@ public final class MainActivity extends Activity {
         try {
             JSONObject payload = new JSONObject();
             payload.put("stage", "queued");
-            payload.put("title", "Hand captured");
-            payload.put("body", "Saved. Inner Game will process it automatically when you return.");
+            payload.put("title", "Screenshot saved");
+            payload.put("body", "Poker screenshot saved.");
             payload.put("handId", captureId);
             showHandNotification(payload.toString());
         } catch (Exception ignored) {}
