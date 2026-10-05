@@ -191,6 +191,7 @@ public final class MainActivity extends Activity {
             unregisterScreenshotObserver();
             return;
         }
+        requestNotificationPermissionIfNeeded();
         requestMediaPermissionIfNeeded();
     }
 
