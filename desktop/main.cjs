@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, Menu, nativeTheme, globalShortcut, desktopCapturer, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, Menu, nativeTheme, globalShortcut, desktopCapturer, screen, ipcMain, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -132,6 +132,21 @@ app.whenReady().then(() => {
   globalShortcut.register('CommandOrControl+Shift+H', capturePrimaryScreen);
   startScreenshotWatchers();
   ipcMain.handle('innergame:capture-hand', capturePrimaryScreen);
+  ipcMain.handle('innergame:notify-hand', (_event, payload={}) => {
+    try {
+      if (!Notification.isSupported()) return false;
+      const notification = new Notification({
+        title: payload.title || 'Inner Game',
+        body: payload.body || '',
+        silent: false
+      });
+      notification.show();
+      return true;
+    } catch (error) {
+      console.error('Hand notification failed', error);
+      return false;
+    }
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
