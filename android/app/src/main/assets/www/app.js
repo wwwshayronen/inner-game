@@ -159,7 +159,10 @@ function formatDuration(ms){ const total=Math.max(0,Math.floor((Number(ms)||0)/1
 function nativeCall(name,payload={}){
   try{
     if(window.InnerGameNative&&typeof window.InnerGameNative[name]==='function'){ window.InnerGameNative[name](JSON.stringify(payload)); return; }
-    if(window.InnerGameDesktop&&name==='captureHand'&&typeof window.InnerGameDesktop.captureHand==='function'){ window.InnerGameDesktop.captureHand(); return; }
+    if(window.InnerGameDesktop){
+      if(name==='captureHand'&&typeof window.InnerGameDesktop.captureHand==='function'){ window.InnerGameDesktop.captureHand(); return; }
+      if(name==='notifyHand'&&typeof window.InnerGameDesktop.notifyHand==='function'){ window.InnerGameDesktop.notifyHand(payload); return; }
+    }
     if(window.webkit?.messageHandlers?.innerGame) window.webkit.messageHandlers.innerGame.postMessage({action:name,...payload});
   }catch{}
 }
@@ -204,6 +207,11 @@ function normalizeCapturedTitle(parsed, fallback='Captured hand'){
   return String(parsed?.title||parsed?.tournamentName||fallback||'Captured hand').trim();
 }
 function captureToast(text,type='ok'){let t=document.getElementById('captureToast');if(!t){t=document.createElement('div');t.id='captureToast';document.body.appendChild(t);}t.className='capture-toast '+type;t.textContent=text;requestAnimationFrame(()=>t.classList.add('show'));setTimeout(()=>t.classList.remove('show'),3000);}
+function notifyHandStatus(stage,hand){
+  const title=stage==='analyzing'?'Poker hand captured':stage==='saved'?'Hand saved':stage==='failed'?'Hand needs attention':'Inner Game';
+  const body=stage==='analyzing'?'Screenshot detected. Analyzing the hand now…':stage==='saved'?((hand&&hand.title?hand.title+' · ':'')+'Saved to Inner Game.'):'The screenshot was saved, but analysis needs another try.';
+  nativeCall('notifyHand',{stage,title,body,handId:hand?.id||''});
+}
 function findHandRecord(id){
   if(state.activeSession){
     const found=allSessionHands(state.activeSession).find(h=>h.id===id);
@@ -266,6 +274,7 @@ async function analyzeStoredHand(handId,dataUrl){
     }else{
       if(pendingCapturedHand?.id===hand.id)pendingCapturedHand=null;
       captureToast('Hand saved ✓');
+      notifyHandStatus('saved',hand);
     }
   }catch(e){
     console.error(e);
@@ -277,6 +286,7 @@ async function analyzeStoredHand(handId,dataUrl){
     save();
     refreshCaptureUi();
     captureToast('Screenshot saved · analysis failed','error');
+    notifyHandStatus('failed',hand);
   }
 }
 async function analyzeCapturedScreenshot(dataUrl,source='native'){
@@ -302,6 +312,7 @@ async function analyzeCapturedScreenshot(dataUrl,source='native'){
     saveCapturedHand(provisional);
     refreshCaptureUi();
     captureToast('Screenshot saved · analyzing…');
+    notifyHandStatus('analyzing',provisional);
     await analyzeStoredHand(id,compact);
   }catch(e){
     console.error(e);
@@ -360,7 +371,7 @@ function handDetail(){
   const title=normalizeCapturedTitle(h,handDisplayTitle(h));
   const hero=(h.heroCards||[]), board=(h.board||[]);
   const meta=[h.site,h.blinds||h.stakes,h.heroPosition].filter(Boolean);
-  return appShell(`${header('<span class="accent">Hand</span>','Saved automatically from your screenshot.')}
+  return appShell(`${header('<span class="accent">Hand</span>','Captured, parsed, and attached to your poker timeline.')}
     <section class="hand-detail-hero card">
       <img data-hand-image-key="${esc(h.imageKey)}" alt="Poker hand screenshot">
       <div class="hand-detail-overlay"><span class="hand-status ${esc(status)}">${esc(statusLabel)}</span></div>
@@ -803,7 +814,7 @@ function sessionDetail(){
   const hands=allSessionHands(s).filter(h=>!h.autoCandidate);
   return appShell(`${header('Session <span class="accent">Details</span>',`${esc(s.date)} · ${esc(s.game)}`)}
     <section class="card pad session-detail-top"><div class="row between"><div><small class="eyebrow">RESULT</small><strong class="session-detail-pnl ${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</strong></div><div><small class="eyebrow">PROCESS</small><strong>${s.process}/10</strong></div></div><div class="session-meta top-gap">${esc([s.room,s.state,s.durationMs?formatDuration(s.durationMs):null].filter(Boolean).join(' · '))}</div></section>
-    <section class="card pad"><div class="row between"><div><div class="section-title">Hands</div><div class="session-meta">${hands.length} captured during this session</div></div>${hands.length?`<button class="session-action" data-open-session-hands="${esc(s.id)}">View all</button>`:''}</div><div class="session-hand-preview">${hands.slice(-3).reverse().map(h=>handCard(h)).join('')||'<div class="empty">No hands captured in this session.</div>'}</div></section>
+    <section class="card pad session-hands-destination" data-open-session-hands="${esc(s.id)}" role="button" tabindex="0"><div class="row between"><div><div class="section-title">Saved Hands</div><div class="session-meta">${hands.length} captured during this session</div></div>${hands.length?'<span class="session-hands-chevron">›</span>':''}</div><div class="session-hand-preview">${hands.slice(-3).reverse().map(h=>handCard(h)).join('')||'<div class="empty">No hands captured in this session.</div>'}</div></section>
     <button class="btn secondary" data-edit-session="${esc(s.id)}">Edit Session</button>`,'sessions');
 }
 function editSession(){
@@ -909,7 +920,7 @@ function bind(){
   document.querySelectorAll('[data-open-session]').forEach(el=>{const open=()=>{editingSessionId=el.dataset.openSession;navigate('sessionDetail');};el.onclick=e=>{if(e.target.closest('button'))return;open();};el.onkeydown=e=>{if(e.key==='Enter'){open();}};});
   document.querySelectorAll('[data-hands-filter]').forEach(el=>el.onclick=()=>{handsFilter=el.dataset.handsFilter;render();});
   const dropZone=document.getElementById('handDropZone'); if(dropZone){dropZone.ondragover=e=>{e.preventDefault();dropZone.classList.add('dragging');};dropZone.ondragleave=()=>dropZone.classList.remove('dragging');dropZone.ondrop=e=>{e.preventDefault();dropZone.classList.remove('dragging');const file=[...(e.dataTransfer?.files||[])].find(f=>f.type.startsWith('image/'));if(!file)return;const reader=new FileReader();reader.onload=()=>window.innerGameReceiveScreenshot(reader.result,'desktop_drop');reader.readAsDataURL(file);};}
-    document.querySelectorAll('[data-open-session-hands]').forEach(el=>el.onclick=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');});
+    document.querySelectorAll('[data-open-session-hands]').forEach(el=>{const open=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');};el.onclick=e=>{e.stopPropagation();open();};el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-open-hand]').forEach(el=>{const open=()=>{handReturnRoute=route;selectedHandId=el.dataset.openHand;navigate('handDetail');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-edit-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.editHand);if(pendingCapturedHand)navigate('captureReview');});
   document.querySelectorAll('[data-delete-hand]').forEach(el=>el.onclick=()=>{removeCapturedHand(el.dataset.deleteHand);selectedHandId=null;navigate(handReturnRoute==='handDetail'?'handsLibrary':handReturnRoute);});
