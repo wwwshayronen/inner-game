@@ -1271,10 +1271,53 @@ function sessions(){
   ${moneyGraph()}
   ${gamificationPanel()}
   <section class="card pad"><div class="metrics"><div class="metric"><small>Total Sessions</small><strong>${list.length}</strong></div><div class="metric"><small>Avg Process Score</small><strong>${list.length?avg(list.map(x=>x.process)).toFixed(1):'—'}<span class="session-meta"> / 10</span></strong></div></div></section>
-  <div class="section-title list-heading">Recent Sessions</div><section class="card session-list">${list.length?list.map(sessionRow).join(''):'<div class="empty">No sessions yet. Log one after you play.</div>'}</section>
+  <div class="section-title list-heading">Recent Sessions</div><section class="session-list session-list-cards">${list.length?list.map(sessionRow).join(''):'<div class="card empty">No sessions yet. Log one after you play.</div>'}</section>
   ${sessionDeleteModal()}`,'sessions');
 }
-function sessionRow(s){ const when=s.startAt?new Date(s.startAt).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):s.date; return `<div class="session-row" data-open-session="${esc(s.id)}" role="button" tabindex="0"><div><h3>${esc(s.game)}</h3><div class="session-meta">${esc(when)}${s.room?` · ${esc(s.room)}`:''} · ${esc(s.state)}${s.durationMs?` · ${formatDuration(s.durationMs)}`:''}</div><div class="score">Process ${s.process}/10 · Tilt ${s.tilt}/10</div></div><div class="session-side"><div class="session-pnl ${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</div><div class="score note-snippet">${esc(s.note||'')}</div></div><div class="session-actions"><button class="session-action" data-edit-session="${esc(s.id)}" aria-label="Edit session">Edit</button><button class="session-action" data-open-session-hands="${esc(s.id)}">Hands ${allSessionHands(s).length}</button><button class="session-action danger-text" data-delete-session="${esc(s.id)}" aria-label="Delete session">Delete</button></div></div>`; }
+function sessionWhenLabel(s){
+  if(!s.startAt)return s.date||'';
+  const d=new Date(s.startAt), now=new Date();
+  const sameDay=(a,b)=>a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();
+  const yesterday=new Date(now); yesterday.setDate(now.getDate()-1);
+  const time=d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  if(sameDay(d,now))return `Today, ${time}`;
+  if(sameDay(d,yesterday))return `Yesterday, ${time}`;
+  return `${d.toLocaleDateString([], {day:'numeric',month:'short'})}, ${time}`;
+}
+function compactSessionDuration(ms){
+  if(!(Number(ms)>0))return '';
+  const minutes=Math.max(1,Math.round(Number(ms)/60000)), hours=Math.floor(minutes/60), rest=minutes%60;
+  return hours?`${hours}h ${String(rest).padStart(2,'0')}m`:`${minutes}m`;
+}
+function sessionRoomThumb(room=''){
+  const raw=String(room||'').trim(), key=raw.toLowerCase();
+  let label='♠', kind='default';
+  if(key.includes('gg')){label='GG';kind='gg';}
+  else if(key.includes('wpt')){label='W';kind='wpt';}
+  else if(key.includes('pokerstars')||key.includes('stars')){label='★';kind='stars';}
+  else if(key.includes('coinpoker')){label='CP';kind='coin';}
+  else if(key.includes('888')){label='888';kind='eight';}
+  else if(raw){label=(raw.match(/[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'♠';}
+  return `<div class="session-room-thumb ${kind}" aria-hidden="true"><span>${esc(label)}</span></div>`;
+}
+function sessionRow(s){
+  const when=sessionWhenLabel(s), duration=compactSessionDuration(s.durationMs), hands=allSessionHands(s).length;
+  const pnl=Number(s.pnl)||0, pnlClass=pnl>0?'positive':pnl<0?'negative':'neutral';
+  const meta=[when,s.room,duration].filter(Boolean).join(' · ');
+  return `<div class="session-row session-card-row" data-open-session="${esc(s.id)}" role="button" tabindex="0" aria-label="Open ${esc(s.game)} session">
+    ${sessionRoomThumb(s.room)}
+    <div class="session-card-main">
+      <div class="session-card-top"><h3>${esc(s.game)}</h3><div class="session-pnl ${pnlClass}">${money(pnl)}</div></div>
+      <div class="session-meta session-card-meta">${esc(meta)}</div>
+      <div class="session-card-stats">
+        <span class="session-stat process"><i></i><span>Process</span><strong>${esc(s.process)}</strong></span>
+        <span class="session-stat tilt"><i></i><span>Tilt</span><strong>${esc(s.tilt)}</strong></span>
+        <span class="session-hand-count" aria-label="${hands} saved hands"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="3.5" width="11" height="13" rx="2"></rect><path d="M7 1.8h6M7.5 7.2h5M7.5 10.2h5"></path></svg>${hands} hand${hands===1?'':'s'}</span>
+        <span class="session-row-chevron" aria-hidden="true">›</span>
+      </div>
+    </div>
+  </div>`;
+}
 function sessionDetail(){
   const s=state.sessions.find(x=>x.id===editingSessionId); if(!s){route='sessions';return sessions();}
   const hands=allSessionHands(s).filter(h=>!h.autoCandidate);
