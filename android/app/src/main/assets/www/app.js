@@ -325,15 +325,16 @@ async function analyzeCapturedScreenshot(dataUrl,source='native'){
   }
 }
 function saveCapturedHand(hand){
-  const manual=isManualHandSource(hand.source);
-  if(!manual && state.activeSession){
+  if(state.activeSession){
+    if(!state.activeSession.id) state.activeSession.id=crypto.randomUUID?.()||String(Date.now());
+    const sessionId=state.activeSession.id;
     state.activeSession.hands=allSessionHands(state.activeSession);
     const existing=state.activeSession.hands.find(x=>x.id===hand.id);
-    if(existing)Object.assign(existing,hand);
-    else state.activeSession.hands.push({...hand,sessionId:'active',userEdited:Boolean(hand.userEdited)});
+    if(existing)Object.assign(existing,hand,{sessionId});
+    else state.activeSession.hands.push({...hand,sessionId,userEdited:Boolean(hand.userEdited)});
   }else{
     const existing=generalHands().find(x=>x.id===hand.id);
-    if(existing)Object.assign(existing,hand);
+    if(existing)Object.assign(existing,hand,{sessionId:null});
     else generalHands().push({...hand,sessionId:null,userEdited:Boolean(hand.userEdited)});
   }
   save();
@@ -382,33 +383,20 @@ function handDetail(){
   const status=h.status||'ready';
   const statusLabel=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review recommended':'Saved';
   const title=normalizeCapturedTitle(h,handDisplayTitle(h));
-  const hero=(h.heroCards||[]), board=(h.board||[]);
   const meta=[h.site,h.blinds||h.stakes].filter(Boolean);
   return appShell(`${header('<span class="accent">Hand</span>','')}
     <section class="hand-b-hero card">
       <img data-hand-image-key="${esc(h.imageKey)}" alt="Poker hand screenshot">
-      <div class="hand-b-status"><span class="hand-status ${esc(status)}">${esc(statusLabel)}</span></div>
     </section>
     <section class="hand-b-title">
       <div class="hand-kind">${h.gameType==='tournament'?'TOURNAMENT':'POKER HAND'}</div>
       <h2>${esc(title)}</h2>
-      <div class="hand-b-meta">${meta.map(x=>`<span>${esc(x)}</span>`).join('')}<span>${new Date(h.capturedAt||Date.now()).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span></div>
-    </section>
-    <section class="hand-b-table card">
-      <div class="hand-b-hero-cards">
-        <small>HERO</small>
-        <div class="poker-card-row">${hero.length?hero.map(pokerCardChip).join(''):'<b>—</b>'}</div>
-      </div>
-      <div class="hand-b-board">
-        <small>BOARD</small>
-        <div class="poker-card-row">${board.length?board.map(pokerCardChip).join(''):'<b>—</b>'}</div>
-      </div>
-      <div class="hand-b-pot"><small>POT</small><strong>${esc(h.pot||'—')}</strong></div>
+      <div class="hand-b-meta">${meta.map(x=>`<span>${esc(x)}</span>`).join('')}<span>${new Date(h.capturedAt||Date.now()).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span><span class="hand-status ${esc(status)}">${esc(statusLabel)}</span></div>
     </section>
     <section class="card pad hand-notes-card">
-      <div class="row between"><div><small class="eyebrow">NOTES</small><div class="hand-notes-title">Your read on the hand</div></div><span class="notes-saved-hint" id="notesSavedHint"></span></div>
-      <textarea id="handNotes" placeholder="Add a note, thought, question, or something to review later…">${esc(h.notes||'')}</textarea>
-      <button class="btn secondary hand-notes-save" data-save-hand-notes="${esc(h.id)}">Save Note</button>
+      <div class="row between"><small class="eyebrow">NOTES</small><span class="notes-saved-hint" id="notesSavedHint"></span></div>
+      <textarea id="handNotes" aria-label="Hand notes" placeholder="Add your notes about this hand…">${esc(h.notes||'')}</textarea>
+      <button class="btn primary hand-notes-save" data-save-hand-notes="${esc(h.id)}">Save Notes</button>
     </section>
     <div class="hand-detail-actions">
       ${status==='failed'?`<button class="btn primary" data-retry-hand="${esc(h.id)}">Retry Analysis</button>`:''}
@@ -892,7 +880,7 @@ function render(){ const app=document.getElementById('app'); app.innerHTML = ({h
 function bind(){
   document.querySelectorAll('[data-nav]').forEach(el=>el.onclick=()=>navigate(el.dataset.nav));
   document.querySelectorAll('[data-back]').forEach(el=>el.onclick=()=>navigate(route==='handDetail'?handReturnRoute:route==='handsLibrary'?'sessions':route==='sessionDetail'?'sessions':route==='sessionHands'?(selectedSessionHandsId==='active'?'active':'sessions'):route==='captureReview'?(selectedHandId?'handDetail':'active'):route==='editSession'?'sessions':route==='log'||route==='active'?'home':route==='breathe'?'prep':route==='goals'?'breathe':route==='handsIntro'?'goals':route==='handPlay'?'handsIntro':route==='handExplain'?'handPlay':route==='handsComplete'?'handsIntro':route==='review'?'handsIntro':'home'));
-  const startPrep=document.querySelector('[data-start-prep]'); if(startPrep)startPrep.onclick=beginPreparation;
+  document.querySelectorAll('[data-start-prep]').forEach(el=>el.onclick=beginPreparation);
   document.querySelectorAll('[data-breath-level]').forEach(el=>el.onclick=()=>{ breathLevel=el.dataset.breathLevel; state.prep.breathLevel=breathLevel; save(); resetBreath(); });
   document.querySelectorAll('[data-breath-workout]').forEach(el=>el.onclick=()=>{ breathWorkout=el.dataset.breathWorkout; state.prep.breathWorkout=breathWorkout; save(); resetBreath(); });
   const toggle=document.getElementById('breathToggle'); if(toggle)toggle.onclick=()=>breathRunning?(stopBreath(),render()):startBreath();
@@ -918,17 +906,20 @@ function bind(){
     const amount=Number(state.prep.sessionAmount);
     const err=document.getElementById('startError');
     if(!Number.isFinite(amount)||amount<=0){ if(err)err.textContent='Enter the amount you are starting the session with.'; document.querySelector('[data-prep-text="sessionAmount"]')?.focus(); return; }
-    ensurePrepSchedule(); rememberGame(state.prep.stakes); rememberRoom(state.prep.room); state.activeSession={startedAt:Date.now(),date:localDateValue(),stakes:normalizeGameName(state.prep.stakes),room:normalizeRoomName(state.prep.room),startedAmount:amount,plannedStart:`${state.prep.startDate}T${state.prep.startTime}`,plannedEnd:`${state.prep.endDate}T${state.prep.endTime}`,prep:structuredClone(state.prep),hands:[]};
+    ensurePrepSchedule(); rememberGame(state.prep.stakes); rememberRoom(state.prep.room); state.activeSession={id:crypto.randomUUID?.()||String(Date.now()),startedAt:Date.now(),date:localDateValue(),stakes:normalizeGameName(state.prep.stakes),room:normalizeRoomName(state.prep.room),startedAmount:amount,plannedStart:`${state.prep.startDate}T${state.prep.startTime}`,plannedEnd:`${state.prep.endDate}T${state.prep.endTime}`,prep:structuredClone(state.prep),hands:[]};
     save(); scheduleBreakReminders(); navigate('active');
   };
-  const finish=document.querySelector('[data-finish-session]'); if(finish)finish.onclick=()=>navigate('log');
+  document.querySelectorAll('[data-finish-session]').forEach(el=>el.onclick=()=>navigate('log'));
   const f=document.getElementById('logForm'); if(f)f.onsubmit=e=>{
     e.preventDefault(); const fd=new FormData(f), started=Number(fd.get('started')),finished=Number(fd.get('finished'));
     const process=Number(document.querySelector('[data-range="process"]')?.value||7), judgment=Number(document.querySelector('[data-range="judgment"]')?.value||4), tilt=Number(document.querySelector('[data-range="tilt"]')?.value||3), trust=Number(document.querySelector('[data-range="trust"]')?.value||7);
     const mental=state.activeSession?.prep; const scoreState = tilt>=8?'Tilted':(mental?.noise??5)<=3&&tilt<=4?'Calm':trust>=7?'Focused':'Tense';
     const durationMs=state.activeSession?Date.now()-state.activeSession.startedAt:null;
     const startAt=parseLocalDateTime(fd.get('startAt')), endAt=parseLocalDateTime(fd.get('endAt')); if(!startAt||!endAt||endAt<startAt)return;
-    const room=normalizeRoomName(fd.get('room')); rememberGame(fd.get('game')); rememberRoom(room); state.sessions.push({id:crypto.randomUUID?.()||String(Date.now()),date:localDateValue(startAt),startAt,endAt,room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,state:scoreState,note:fd.get('note'),prep:mental||null,durationMs:endAt-startAt,hands:allSessionHands(state.activeSession)});
+    const room=normalizeRoomName(fd.get('room')); rememberGame(fd.get('game')); rememberRoom(room);
+    const completedSessionId=state.activeSession?.id||crypto.randomUUID?.()||String(Date.now());
+    const completedHands=allSessionHands(state.activeSession).map(h=>({...h,sessionId:completedSessionId}));
+    state.sessions.push({id:completedSessionId,date:localDateValue(startAt),startAt,endAt,room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,state:scoreState,note:fd.get('note'),prep:mental||null,durationMs:endAt-startAt,hands:completedHands});
     state.activeSession=null; save(); cancelBreakReminders(); navigate('sessions');
   };
   const sound=document.getElementById('breathSound'); if(sound)sound.onclick=()=>{breathSoundEnabled=!breathSoundEnabled; if(breathSoundEnabled)ensureBreathAudio(); render();};
