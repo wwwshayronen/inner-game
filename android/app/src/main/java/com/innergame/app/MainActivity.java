@@ -3,6 +3,7 @@ package com.innergame.app;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Notification;
 import android.app.PendingIntent;
 import android.app.NotificationChannel;
@@ -18,6 +19,7 @@ import android.os.Looper;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.Base64;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
@@ -44,7 +46,10 @@ public final class MainActivity extends Activity {
     private WebView webView;
     private String pendingScreenshotDataUrl;
     private String pendingHandId;
+    private String pendingHandNotificationPayload;
     private boolean autoScreenshotEnabled = true;
+    private boolean capturePermissionPromptedThisLaunch = false;
+    private boolean notificationPermissionPromptedThisLaunch = false;
     private ContentObserver screenshotObserver;
     private String lastScreenshotUri = "";
     private long lastScreenshotHandledAt = 0L;
@@ -173,16 +178,92 @@ public final class MainActivity extends Activity {
         return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
     }
 
+    private boolean hasLimitedMediaAccess() {
+        return Build.VERSION.SDK_INT >= 34
+                && checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED
+                && !hasMediaReadPermission();
+    }
+
+    private boolean hasNotificationPermission() {
+        return Build.VERSION.SDK_INT < 33
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    }
+
     private void requestMediaPermissionIfNeeded() {
         if (hasMediaReadPermission()) {
             registerScreenshotObserver();
+            requestNotificationPermissionIfNeeded();
             return;
         }
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            requestPermissions(
+                    new String[]{
+                            Manifest.permission.READ_MEDIA_IMAGES,
+                            Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+                    },
+                    MEDIA_PERMISSION_REQUEST
+            );
+        } else if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{Manifest.permission.READ_MEDIA_IMAGES}, MEDIA_PERMISSION_REQUEST);
         } else {
             requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, MEDIA_PERMISSION_REQUEST);
         }
+    }
+
+    private void ensureCapturePermissionsOnOpen() {
+        if (!autoScreenshotEnabled) return;
+        if (hasMediaReadPermission()) {
+            registerScreenshotObserver();
+            requestNotificationPermissionIfNeeded();
+            flushPendingHandNotification();
+            return;
+        }
+        if (capturePermissionPromptedThisLaunch) return;
+        capturePermissionPromptedThisLaunch = true;
+        requestMediaPermissionIfNeeded();
+    }
+
+    private void openAppSettings() {
+        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        intent.setData(Uri.fromParts("package", getPackageName(), null));
+        startActivity(intent);
+    }
+
+    private void showMediaPermissionHelp() {
+        final boolean partial = hasLimitedMediaAccess();
+        final boolean canAskAgain = !partial
+                && Build.VERSION.SDK_INT >= 23
+                && shouldShowRequestPermissionRationale(
+                        Build.VERSION.SDK_INT >= 33
+                                ? Manifest.permission.READ_MEDIA_IMAGES
+                                : Manifest.permission.READ_EXTERNAL_STORAGE
+                );
+
+        String message = partial
+                ? "Inner Game only has access to selected photos. Automatic poker screenshot detection needs access to all photos so it can see new screenshots."
+                : "Inner Game needs Photos and videos access to detect new poker screenshots automatically. Without it, screenshots cannot be captured into Hands.";
+
+        new AlertDialog.Builder(this)
+                .setTitle("Enable screenshot detection")
+                .setMessage(message)
+                .setNegativeButton("Not now", null)
+                .setPositiveButton(canAskAgain ? "Allow access" : "Open settings", (dialog, which) -> {
+                    if (canAskAgain) {
+                        requestMediaPermissionIfNeeded();
+                    } else {
+                        openAppSettings();
+                    }
+                })
+                .show();
+    }
+
+    private void showNotificationPermissionHelp() {
+        new AlertDialog.Builder(this)
+                .setTitle("Enable hand notifications")
+                .setMessage("Allow notifications so Inner Game can tell you when a screenshot is being analyzed and when the hand is saved.")
+                .setNegativeButton("Not now", null)
+                .setPositiveButton("Open settings", (dialog, which) -> openAppSettings())
+                .show();
     }
 
     private void setAutoScreenshotEnabled(boolean enabled) {
@@ -191,8 +272,7 @@ public final class MainActivity extends Activity {
             unregisterScreenshotObserver();
             return;
         }
-        requestNotificationPermissionIfNeeded();
-        requestMediaPermissionIfNeeded();
+        ensureCapturePermissionsOnOpen();
     }
 
     private void registerScreenshotObserver() {
@@ -273,8 +353,21 @@ public final class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == MEDIA_PERMISSION_REQUEST && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            registerScreenshotObserver();
+        if (requestCode == MEDIA_PERMISSION_REQUEST) {
+            if (hasMediaReadPermission()) {
+                registerScreenshotObserver();
+                requestNotificationPermissionIfNeeded();
+            } else {
+                showMediaPermissionHelp();
+            }
+            return;
+        }
+        if (requestCode == NOTIFICATION_PERMISSION_REQUEST) {
+            if (hasNotificationPermission()) {
+                flushPendingHandNotification();
+            } else {
+                showNotificationPermissionHelp();
+            }
         }
     }
 
@@ -314,7 +407,22 @@ public final class MainActivity extends Activity {
     }
 
     private void showHandNotification(String payload) {
-        requestNotificationPermissionIfNeeded();
+        if (!hasNotificationPermission()) {
+            pendingHandNotificationPayload = payload;
+            requestNotificationPermissionIfNeeded();
+            return;
+        }
+        showHandNotificationNow(payload);
+    }
+
+    private void flushPendingHandNotification() {
+        if (!hasNotificationPermission() || pendingHandNotificationPayload == null) return;
+        String payload = pendingHandNotificationPayload;
+        pendingHandNotificationPayload = null;
+        showHandNotificationNow(payload);
+    }
+
+    private void showHandNotificationNow(String payload) {
         try {
             JSONObject data = new JSONObject(payload);
             String title = data.optString("title", "Inner Game");
@@ -356,7 +464,12 @@ public final class MainActivity extends Activity {
     }
 
     private void requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        if (hasNotificationPermission()) {
+            flushPendingHandNotification();
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 33 && !notificationPermissionPromptedThisLaunch) {
+            notificationPermissionPromptedThisLaunch = true;
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION_REQUEST);
         }
     }
@@ -453,6 +566,14 @@ public final class MainActivity extends Activity {
     public void onBackPressed() {
         if (webView != null) webView.evaluateJavascript("history.back()", null);
         else super.onBackPressed();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (webView != null) {
+            webView.postDelayed(this::ensureCapturePermissionsOnOpen, 250L);
+        }
     }
 
     @Override
