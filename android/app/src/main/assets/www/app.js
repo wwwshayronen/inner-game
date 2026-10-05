@@ -295,6 +295,17 @@ async function analyzeStoredHand(handId,dataUrl){
     }
   }catch(e){
     console.error(e);
+    if(hand.source==='android_auto_pending'){
+      hand.status='pending';
+      hand.reviewNeeded=false;
+      hand.autoCandidate=true;
+      hand.error=String(e?.message||'Pending analysis');
+      hand.title=hand.title&&hand.title!=='Analyzing hand…'?hand.title:'Captured hand';
+      hand.description='Captured. Analysis will retry automatically.';
+      save();
+      refreshCaptureUi();
+      return;
+    }
     hand.status='failed';
     hand.reviewNeeded=true;
     hand.error=String(e?.message||'Analysis failed');
@@ -408,6 +419,106 @@ async function saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson){
 }
 
 window.innerGameReceiveScreenshot=(dataUrl,source='native')=>analyzeCapturedScreenshot(dataUrl,source);
+
+async function processQueuedScreenshot(id,dataUrl,capturedAt){
+  const existing=findHandRecord(id);
+  const hand=existing||{
+    id,
+    source:'android_auto_pending',
+    capturedAt:Number(capturedAt)||Date.now(),
+    imageKey:'hand:'+id,
+    status:'analyzing',
+    reviewNeeded:false,
+    title:'Analyzing hand…',
+    description:'',
+    confidence:0,
+    heroCards:[],
+    board:[],
+    uncertainFields:[],
+    autoCandidate:true
+  };
+
+  try{
+    const compact=await resizeScreenshot(dataUrl,1120,.74);
+    await storeHandImage(hand.imageKey,compact);
+    saveCapturedHand(hand);
+
+    // Foreground/WebView networking is the reliable path on this device.
+    // Keep this silent: no system "analysis failed" notification for temporary connectivity.
+    let contextSession=state.sessions.find(s=>allSessionHands(s).some(h=>h.id===id));
+    if(!contextSession && state.activeSession && allSessionHands(state.activeSession).some(h=>h.id===id)) contextSession=state.activeSession;
+    const requestBody=JSON.stringify({
+      imageDataUrl:compact,
+      context:{
+        sessionGame:contextSession?.stakes||contextSession?.game||'',
+        sessionRoom:contextSession?.room||''
+      }
+    });
+
+    let res=null, parsed={}, lastError=null;
+    for(let attempt=0;attempt<3;attempt++){
+      try{
+        res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/analyze-hand',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          cache:'no-store',
+          body:requestBody
+        });
+        parsed={};
+        try{ parsed=await res.json(); }catch{}
+        if(res.ok)break;
+        lastError=new Error(parsed?.error||('HTTP '+res.status));
+      }catch(error){ lastError=error; }
+      if(attempt<2) await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));
+    }
+
+    if(!res?.ok){
+      hand.status='pending';
+      hand.reviewNeeded=false;
+      hand.autoCandidate=true;
+      hand.error=String(lastError?.message||'Pending analysis');
+      save();
+      return false; // no ack: retry automatically on next app foreground
+    }
+
+    if(!parsed.isPokerHand){
+      removeCapturedHand(id);
+      nativeCall('ackNativeAnalysis',{id});
+      return true;
+    }
+
+    Object.assign(hand,parsed,{
+      id,
+      source:'android_auto',
+      capturedAt:hand.capturedAt,
+      imageKey:hand.imageKey,
+      title:normalizeCapturedTitle(parsed,hand.title),
+      tournamentName:cleanVisibleTournamentText(parsed.tournamentName||parsed.visibleEventText||''),
+      autoCandidate:false,
+      status:'ready',
+      error:'',
+      reviewNeeded:false
+    });
+    save();
+    refreshCaptureUi();
+    nativeCall('ackNativeAnalysis',{id});
+    return true;
+  }catch(error){
+    console.error(error);
+    hand.status='pending';
+    hand.reviewNeeded=false;
+    hand.autoCandidate=true;
+    hand.error=String(error?.message||'Pending analysis');
+    save();
+    return false;
+  }
+}
+
+window.innerGameReceiveQueuedScreenshot=(id,dataUrl,capturedAt)=>{
+  processQueuedScreenshot(id,dataUrl,capturedAt);
+  return true;
+};
+
 window.innerGameReceiveNativeAnalysis=(id,dataUrl,analysisJson)=>{
   saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson);
   return true;
