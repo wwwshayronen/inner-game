@@ -129,6 +129,7 @@ public final class MainActivity extends Activity {
                 super.onPageFinished(view, url);
                 dispatchPendingScreenshot();
                 dispatchPendingHandOpen();
+                dispatchQueuedScreenshots();
                 dispatchPendingNativeAnalyses();
             }
         });
@@ -456,65 +457,30 @@ public final class MainActivity extends Activity {
         notifyAutoCaptureDetected();
 
         new Thread(() -> {
-            String dataUrl = null;
-            String stage = "IMAGE_READ";
             try {
                 logCaptureDiagnostic(captureId, "DETECTED", "uri=" + screenshotUri);
-
-                stage = "IMAGE_READ";
-                dataUrl = readCompactImageDataUrlWhenReady(screenshotUri);
+                String dataUrl = readCompactImageDataUrlWhenReady(screenshotUri);
                 if (dataUrl == null) {
-                    throw new CaptureStageException(stage, "No readable image data");
-                }
-                logCaptureDiagnostic(captureId, "IMAGE_READY", "chars=" + dataUrl.length());
-
-                stage = "HTTP_ANALYSIS";
-                JSONObject parsed;
-                try {
-                    parsed = analyzeHandNative(dataUrl, captureId);
-                } catch (Exception networkOrApiError) {
-                    if (isTransientNetworkFailure(networkOrApiError)) {
-                        persistPendingNetworkHand(captureId, dataUrl, networkOrApiError);
-                        notifyAutoCaptureWaitingForConnection(captureId);
-                        schedulePendingNetworkRetry(900L);
-                        return;
-                    }
-                    throw networkOrApiError;
-                }
-                logCaptureDiagnostic(captureId, "HTTP_OK", "isPokerHand=" + parsed.optBoolean("isPokerHand", false));
-
-                if (!parsed.optBoolean("isPokerHand", false)) {
-                    cancelAutoCaptureNotification();
-                    return;
+                    throw new CaptureStageException("IMAGE_READ", "No readable image data");
                 }
 
-                stage = "PERSIST_RESULT";
-                persistPendingNativeHand(captureId, dataUrl, parsed.toString());
-                logCaptureDiagnostic(captureId, "PERSIST_OK", "pending result written");
+                // Background capture is intentionally offline-first. Android only persists
+                // the screenshot here; the proven WebView analysis path runs next time
+                // Inner Game is foregrounded.
+                persistQueuedScreenshot(captureId, dataUrl);
+                logCaptureDiagnostic(captureId, "QUEUED", "chars=" + dataUrl.length());
+                notifyAutoCaptureQueued(captureId);
 
-                stage = "DISPATCH_RESULT";
-                dispatchPendingNativeAnalyses();
-                notifyAutoCaptureSaved(captureId, parsed.optString("title", "Poker hand"));
-                logCaptureDiagnostic(captureId, "DONE", "saved notification sent");
+                // If Inner Game happens to already be foregrounded, process immediately.
+                runOnUiThread(this::dispatchQueuedScreenshots);
             } catch (Exception error) {
-                String failedStage = error instanceof CaptureStageException
+                String stage = error instanceof CaptureStageException
                         ? ((CaptureStageException) error).stage
-                        : stage;
-                String details = diagnosticErrorText(error);
-                logCaptureDiagnostic(captureId, failedStage, details);
-                try {
-                    if (dataUrl != null) {
-                        JSONObject failed = new JSONObject();
-                        failed.put("__error", failedStage + ": " + details);
-                        persistPendingNativeHand(captureId, dataUrl, failed.toString());
-                        dispatchPendingNativeAnalyses();
-                    }
-                } catch (Exception persistError) {
-                    logCaptureDiagnostic(captureId, "PERSIST_FAILURE_RESULT", diagnosticErrorText(persistError));
-                }
-                notifyAutoCaptureAnalysisFailed(captureId, failedStage, details);
+                        : "CAPTURE";
+                logCaptureDiagnostic(captureId, stage, diagnosticErrorText(error));
+                notifyAutoCaptureReadFailed();
             }
-        }, "innergame-native-hand-analysis").start();
+        }, "innergame-screenshot-queue").start();
     }
 
     private String readCompactImageDataUrlWhenReady(Uri uri) throws Exception {
@@ -649,6 +615,53 @@ public final class MainActivity extends Activity {
 
     private File pendingHandFile(String captureId) {
         return new File(getFilesDir(), PENDING_HAND_PREFIX + captureId + ".json");
+    }
+
+
+    private void persistQueuedScreenshot(String captureId, String dataUrl) throws Exception {
+        JSONObject pending = new JSONObject();
+        pending.put("id", captureId);
+        pending.put("dataUrl", dataUrl);
+        pending.put("status", "captured_pending");
+        pending.put("capturedAt", System.currentTimeMillis());
+        byte[] bytes = pending.toString().getBytes(StandardCharsets.UTF_8);
+        try (FileOutputStream output = new FileOutputStream(pendingHandFile(captureId))) {
+            output.write(bytes);
+        }
+    }
+
+    private void dispatchQueuedScreenshots() {
+        if (webView == null) return;
+        File[] files = getFilesDir().listFiles((dir, name) ->
+                name.startsWith(PENDING_HAND_PREFIX) && name.endsWith(".json"));
+        if (files == null || files.length == 0) return;
+        Arrays.sort(files, Comparator.comparingLong(File::lastModified));
+
+        for (File file : files) {
+            try {
+                String text;
+                try (FileInputStream input = new FileInputStream(file)) {
+                    text = readUtf8(input);
+                }
+                JSONObject pending = new JSONObject(text);
+                if (!"captured_pending".equals(pending.optString("status"))) continue;
+
+                String captureId = pending.getString("id");
+                String dataUrl = pending.getString("dataUrl");
+                long capturedAt = pending.optLong("capturedAt", System.currentTimeMillis());
+
+                webView.post(() -> webView.evaluateJavascript(
+                        "(function(){if(window.innerGameReceiveQueuedScreenshot){window.innerGameReceiveQueuedScreenshot(" +
+                                JSONObject.quote(captureId) + "," +
+                                JSONObject.quote(dataUrl) + "," +
+                                capturedAt +
+                                ");return true;}return false;})()",
+                        null
+                ));
+            } catch (Exception error) {
+                logCaptureDiagnostic("queue", "DISPATCH_QUEUE", diagnosticErrorText(error));
+            }
+        }
     }
 
     private boolean isTransientNetworkFailure(Throwable error) {
@@ -836,12 +849,12 @@ public final class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
-    private void notifyAutoCaptureWaitingForConnection(String captureId) {
+    private void notifyAutoCaptureQueued(String captureId) {
         try {
             JSONObject payload = new JSONObject();
-            payload.put("stage", "waiting");
-            payload.put("title", "Hand captured · waiting for connection");
-            payload.put("body", "Inner Game saved the screenshot and will retry analysis automatically.");
+            payload.put("stage", "queued");
+            payload.put("title", "Hand captured");
+            payload.put("body", "Saved. Inner Game will process it automatically when you return.");
             payload.put("handId", captureId);
             showHandNotification(payload.toString());
         } catch (Exception ignored) {}
@@ -1093,8 +1106,8 @@ public final class MainActivity extends Activity {
         if (webView != null) {
             webView.postDelayed(() -> {
                 ensureCapturePermissionsOnOpen();
+                dispatchQueuedScreenshots();
                 dispatchPendingNativeAnalyses();
-                retryPendingNetworkAnalyses();
             }, 250L);
         }
     }
