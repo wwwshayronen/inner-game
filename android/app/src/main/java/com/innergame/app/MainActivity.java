@@ -38,6 +38,7 @@ public final class MainActivity extends Activity {
     private static final int NOTIFICATION_PERMISSION_REQUEST = 42;
     private static final int MEDIA_PERMISSION_REQUEST = 43;
     private static final int MAX_BREAK_REMINDERS = 24;
+    private static final String HAND_CHANNEL_ID = "hand_capture";
     private WebView webView;
     private String pendingScreenshotDataUrl;
     private boolean autoScreenshotEnabled = true;
@@ -66,6 +67,7 @@ public final class MainActivity extends Activity {
         settings.setDisplayZoomControls(false);
 
         createNotificationChannel();
+        createHandNotificationChannel();
         webView.addJavascriptInterface(new NativeBridge(), "InnerGameNative");
         WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
@@ -274,6 +276,62 @@ public final class MainActivity extends Activity {
         manager.createNotificationChannel(channel);
     }
 
+    private void createHandNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        NotificationChannel channel = new NotificationChannel(
+                HAND_CHANNEL_ID,
+                "Poker hand capture",
+                NotificationManager.IMPORTANCE_DEFAULT
+        );
+        channel.setDescription("Updates when Inner Game captures and analyzes poker screenshots.");
+        channel.enableVibration(true);
+        manager.createNotificationChannel(channel);
+    }
+
+    private void showHandNotification(String payload) {
+        requestNotificationPermissionIfNeeded();
+        try {
+            JSONObject data = new JSONObject(payload);
+            String title = data.optString("title", "Inner Game");
+            String body = data.optString("body", "");
+            String stage = data.optString("stage", "");
+            String handId = data.optString("handId", "");
+
+            Intent openIntent = new Intent(this, MainActivity.class);
+            openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            if (!handId.isEmpty()) openIntent.putExtra("handId", handId);
+            PendingIntent contentIntent = PendingIntent.getActivity(
+                    this,
+                    9100 + Math.abs(handId.hashCode() % 500),
+                    openIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+            );
+
+            Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? new Notification.Builder(this, HAND_CHANNEL_ID)
+                    : new Notification.Builder(this);
+
+            Notification notification = builder
+                    .setSmallIcon(android.R.drawable.ic_menu_camera)
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setStyle(new Notification.BigTextStyle().bigText(body))
+                    .setContentIntent(contentIntent)
+                    .setAutoCancel(!"analyzing".equals(stage))
+                    .setOngoing("analyzing".equals(stage))
+                    .setOnlyAlertOnce(false)
+                    .setCategory(Notification.CATEGORY_STATUS)
+                    .setPriority(Notification.PRIORITY_DEFAULT)
+                    .build();
+
+            int id = 6100 + Math.abs(handId.hashCode() % 500);
+            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager != null) manager.notify(id, notification);
+        } catch (Exception ignored) {}
+    }
+
     private void requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION_REQUEST);
@@ -352,6 +410,11 @@ public final class MainActivity extends Activity {
                     "Take a screenshot — Inner Game will detect poker hands automatically. Share also works.",
                     Toast.LENGTH_LONG
             ).show());
+        }
+
+        @JavascriptInterface
+        public void notifyHand(String payload) {
+            runOnUiThread(() -> MainActivity.this.showHandNotification(payload));
         }
 
         @JavascriptInterface
