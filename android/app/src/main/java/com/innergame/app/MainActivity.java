@@ -359,7 +359,7 @@ public final class MainActivity extends Activity {
             boolean enabled = true;
             try { enabled = new JSONObject(payload).optBoolean("enabled", true); } catch (Exception ignored) {}
             final boolean finalEnabled = enabled;
-            runOnUiThread(() -> setAutoScreenshotEnabled(finalEnabled));
+            runOnUiThread(() -> MainActivity.this.setAutoScreenshotEnabled(finalEnabled));
         }
     }
 
