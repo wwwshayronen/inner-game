@@ -140,6 +140,21 @@ app.whenReady().then(() => {
         body: payload.body || '',
         silent: false
       });
+      notification.on('click', async () => {
+        try {
+          if (!mainWindow) return;
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.show();
+          mainWindow.focus();
+          if (payload.handId) {
+            await mainWindow.webContents.executeJavaScript(
+              `window.innerGameOpenHand && window.innerGameOpenHand(${JSON.stringify(payload.handId)})`
+            );
+          }
+        } catch (error) {
+          console.error('Could not open hand from notification', error);
+        }
+      });
       notification.show();
       return true;
     } catch (error) {
