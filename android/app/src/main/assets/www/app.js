@@ -243,21 +243,33 @@ async function analyzeStoredHand(handId,dataUrl){
   try{
     let contextSession=state.sessions.find(s=>allSessionHands(s).some(h=>h.id===handId));
     if(!contextSession && state.activeSession && allSessionHands(state.activeSession).some(h=>h.id===handId)) contextSession=state.activeSession;
-    const res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/analyze-hand',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      cache:'no-store',
-      body:JSON.stringify({
-        imageDataUrl:dataUrl,
-        context:{
-          sessionGame:contextSession?.stakes||contextSession?.game||'',
-          sessionRoom:contextSession?.room||''
-        }
-      })
+    const requestBody=JSON.stringify({
+      imageDataUrl:dataUrl,
+      context:{
+        sessionGame:contextSession?.stakes||contextSession?.game||'',
+        sessionRoom:contextSession?.room||''
+      }
     });
-    let parsed={};
-    try{ parsed=await res.json(); }catch{}
-    if(!res.ok) throw new Error(parsed?.error||('HTTP '+res.status));
+    const maxAttempts=hand.source==='android_auto'?2:1;
+    let res=null, parsed={}, lastError=null;
+    for(let attempt=0;attempt<maxAttempts;attempt++){
+      try{
+        res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/analyze-hand',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          cache:'no-store',
+          body:requestBody
+        });
+        parsed={};
+        try{ parsed=await res.json(); }catch{}
+        if(res.ok)break;
+        lastError=new Error(parsed?.error||('HTTP '+res.status));
+      }catch(error){
+        lastError=error;
+      }
+      if(attempt+1<maxAttempts) await new Promise(resolve=>setTimeout(resolve,180));
+    }
+    if(!res?.ok) throw lastError||new Error('Analysis request failed');
     if(!parsed.isPokerHand){
       if(hand.autoCandidate){ removeCapturedHand(hand.id); refreshCaptureUi(); captureToast('Screenshot ignored · not a poker hand'); return; }
       Object.assign(hand,{status:'needs_review',reviewNeeded:true,confidence:Number(parsed.confidence)||0,title:'Unrecognized screenshot',description:'The screenshot is saved, but the poker hand could not be recognized confidently.',uncertainFields:parsed.uncertainFields||[]});
@@ -295,7 +307,6 @@ async function analyzeStoredHand(handId,dataUrl){
   }
 }
 async function analyzeCapturedScreenshot(dataUrl,source='native'){
-  const compact=await resizeScreenshot(dataUrl);
   const id=crypto.randomUUID?.()||String(Date.now());
   const provisional={
     id,
@@ -313,11 +324,12 @@ async function analyzeCapturedScreenshot(dataUrl,source='native'){
     autoCandidate:!isManualHandSource(source)
   };
   try{
+    if(source!=='android_auto') notifyHandStatus('analyzing',provisional);
+    const compact=await resizeScreenshot(dataUrl,1120,.74);
     await storeHandImage(provisional.imageKey,compact);
     saveCapturedHand(provisional);
     refreshCaptureUi();
     captureToast('Screenshot saved · analyzing…');
-    notifyHandStatus('analyzing',provisional);
     await analyzeStoredHand(id,compact);
   }catch(e){
     console.error(e);
