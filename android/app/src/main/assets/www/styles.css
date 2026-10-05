@@ -410,8 +410,9 @@ input:focus,textarea:focus,select:focus{border-color:rgba(53,217,138,.65)!import
 .hand-b-pot strong{font-size:20px;letter-spacing:-.03em}
 .hand-notes-card{background:linear-gradient(180deg,rgba(17,30,27,.96),rgba(8,18,16,.98))}
 .hand-notes-title{margin-top:4px;font-size:17px;font-weight:850;letter-spacing:-.02em}
-.hand-notes-card textarea{margin-top:14px;min-height:120px;background:#08110f;border-color:rgba(148,196,184,.13);line-height:1.5}
-.hand-notes-save{width:100%;margin-top:10px}
+.hand-notes-card textarea{margin-top:14px;min-height:150px;background:#08110f;border-color:rgba(148,196,184,.13);line-height:1.5}
+.hand-notes-card .eyebrow{font-size:11px;letter-spacing:.11em;color:#a7b0ad;font-weight:800}
+.hand-notes-save{width:100%;margin-top:12px}
 .notes-saved-hint{font-size:11px;color:var(--accent);font-weight:800}
 .hand-detail-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .hand-detail-actions .btn.primary{grid-column:1/-1}
