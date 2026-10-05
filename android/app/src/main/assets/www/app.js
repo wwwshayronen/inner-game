@@ -33,6 +33,9 @@ let moneyGame = 'all';
 let pendingCapturedHand = null;
 let selectedSessionHandsId = null;
 let selectedHandId = null;
+let solverReviewHandId = null;
+let solverInspectingHandId = null;
+let solverPolling = new Set();
 let handsFilter = 'all';
 let handReturnRoute = 'handsLibrary';
 const HAND_ANALYSIS_API_URL = localStorage.getItem('innerGame.handApiUrl') || 'https://inner-game-production.up.railway.app';
@@ -599,10 +602,234 @@ function handDetail(){
     </section>
     <div class="hand-detail-actions">
       ${statusInfo.status==='failed'?`<button class="btn primary" data-retry-hand="${esc(h.id)}">Retry Analysis</button>`:''}
+      <button class="btn primary solver-primary-btn" data-solve-hand="${esc(h.id)}">${h.solverResult?'View GTO solution':h.solverStatus==='pending'?'Solver running…':'Solve this hand'} <span>›</span></button>
       <button class="btn secondary" data-edit-hand="${esc(h.id)}">Edit Details</button>
       <button class="btn ghost danger-text" data-delete-hand="${esc(h.id)}">Delete Hand</button>
     </div>`,'sessions');
 }
+
+function solverHand(){ return solverReviewHandId?findHandRecord(solverReviewHandId):selectedHand(); }
+function solverActionLines(actions=[]){
+  return actions.map(a=>[a.street,a.position,a.action,Number(a.amountBb)||0,Number(a.sizePctPot)||0].join(' | ')).join('\n');
+}
+function parseSolverActionLines(text=''){
+  return String(text).split(/\n+/).map(x=>x.trim()).filter(Boolean).map(line=>{
+    const p=line.split('|').map(x=>x.trim());
+    return {
+      street:(p[0]||'preflop').toLowerCase(),
+      position:(p[1]||'').toUpperCase(),
+      action:(p[2]||'unknown').toLowerCase(),
+      amountBb:Number(p[3])||0,
+      sizePctPot:Number(p[4])||0
+    };
+  }).filter(a=>['preflop','flop','turn','river'].includes(a.street));
+}
+function solverMissing(spot){
+  if(!spot)return ['Hand details'];
+  const missing=[];
+  if(spot.game!=='NLH')missing.push('No-limit Hold’em');
+  if(!(Number(spot.tableSize)>=2))missing.push('Table size');
+  if(!spot.heroPosition)missing.push('Hero position');
+  if(!spot.decisionStreet||spot.decisionStreet==='unknown')missing.push('Decision street');
+  if(!Array.isArray(spot.heroCards)||spot.heroCards.length!==2)missing.push('Hero cards');
+  const need={flop:3,turn:4,river:5}[spot.decisionStreet]||0;
+  if(need && (!Array.isArray(spot.board)||spot.board.length<need))missing.push('Board');
+  if(!spot.actionHistoryComplete)missing.push('Complete action history from preflop to this decision');
+  if(spot.decisionStreet!=='preflop'){
+    if(!spot.villainPosition)missing.push('Villain position');
+    if(!(Number(spot.flopStartPotBb)>0))missing.push('Pot entering flop');
+    if(!(Number(spot.flopStartEffectiveStackBb)>0))missing.push('Effective stack entering flop');
+  }
+  return [...new Set([...(spot.missingFields||[]),...missing])];
+}
+function solverField(label,key,value,type='text',step='any'){
+  return `<div class="solver-field"><label>${label}</label><input data-solver-field="${key}" type="${type}" ${type==='number'?`step="${step}" inputmode="decimal"`:''} value="${esc(value??'')}"></div>`;
+}
+function solverSelect(label,key,value,options){
+  return `<div class="solver-field"><label>${label}</label><select data-solver-field="${key}">${options.map(([v,l])=>`<option value="${esc(v)}" ${String(value)===String(v)?'selected':''}>${esc(l)}</option>`).join('')}</select></div>`;
+}
+async function inspectHandForSolver(id,force=false){
+  const hand=findHandRecord(id); if(!hand)return;
+  solverReviewHandId=id;
+  if(hand.solverSpot&&!force){ navigate('solverReview'); return; }
+  route='solverReview'; solverInspectingHandId=id; render();
+  try{
+    const imageDataUrl=await getHandImage(hand.imageKey);
+    if(!imageDataUrl)throw new Error('Screenshot image is missing.');
+    const res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/inspect',{
+      method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
+      body:JSON.stringify({imageDataUrl,hand:{
+        title:hand.title,gameType:hand.gameType,site:hand.site,stakes:hand.stakes||hand.blinds,
+        heroPosition:hand.heroPosition,heroCards:hand.heroCards,board:hand.board,pot:hand.pot,
+        actionSummary:hand.actionSummary
+      }})
+    });
+    const json=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(json.message||json.error||'Could not read the hand for solving.');
+    hand.solverSpot=json.spot;
+    hand.solverError='';
+    save();
+  }catch(error){
+    hand.solverError=String(error?.message||error);
+    save();
+  }finally{
+    solverInspectingHandId=null;
+    if(route==='solverReview'&&solverReviewHandId===id)render();
+  }
+}
+function collectSolverSpot(){
+  const hand=solverHand(); if(!hand?.solverSpot)return null;
+  const spot=structuredClone(hand.solverSpot);
+  document.querySelectorAll('[data-solver-field]').forEach(el=>{
+    const key=el.dataset.solverField;
+    let value=el.value;
+    if(['tableSize','effectiveStackBb','potAtDecisionBb','heroStackBb','villainStackBb','flopStartPotBb','flopStartEffectiveStackBb'].includes(key))value=Number(value)||0;
+    if(key==='heroCards'||key==='board')value=value.trim().split(/\s+/).filter(Boolean);
+    spot[key]=value;
+  });
+  const history=document.getElementById('solverActionHistory');
+  if(history)spot.actionHistory=parseSolverActionLines(history.value);
+  const complete=document.getElementById('solverHistoryComplete');
+  if(complete)spot.actionHistoryComplete=complete.checked;
+  spot.missingFields=solverMissing({...spot,missingFields:[]});
+  hand.solverSpot=spot; save();
+  return spot;
+}
+function solverReview(){
+  const h=solverHand();
+  if(!h){route='handsLibrary';return handsLibrary();}
+  const loading=solverInspectingHandId===h.id;
+  if(loading)return appShell(`${header('Review <span class="accent">Spot</span>','Reading the screenshot for solver-ready details.')}
+    <section class="card pad solver-loading-card"><span class="solver-spinner"></span><strong>Reconstructing the hand…</strong><p>Checking positions, stacks, board and every action up to your decision.</p></section>`,'sessions');
+  if(!h.solverSpot)return appShell(`${header('Review <span class="accent">Spot</span>','We need a complete hand before solving.')}
+    <section class="card pad solver-error-card"><strong>Couldn’t prepare this screenshot</strong><p>${esc(h.solverError||'Try reading the screenshot again.')}</p><button class="btn primary" data-reinspect-solver="${esc(h.id)}">Try again</button></section>`,'sessions');
+  const s=h.solverSpot,missing=solverMissing(s),ready=missing.length===0;
+  const actionText=solverActionLines(s.actionHistory||[]);
+  const notes=(s.extractionNotes||[]).filter(Boolean);
+  return appShell(`${header('Review <span class="accent">Spot</span>','Check the detected details before solving.')}
+    <section class="solver-readiness ${ready?'ready':'needs-review'}">
+      <div class="solver-readiness-icon">${ready?'✓':'!'}</div>
+      <div><strong>${ready?'Ready to solve':`${missing.length} detail${missing.length===1?'':'s'} need review`}</strong>
+      <small>${ready?'Complete action history detected.':'We will not solve until the action path is complete.'}</small></div>
+    </section>
+    ${missing.length?`<section class="card pad solver-missing-card"><small class="eyebrow">NEEDED</small>${missing.map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>`:''}
+    <section class="card pad solver-review-card">
+      <div class="solver-grid">
+        ${solverSelect('Game','game',s.game,[['NLH','NLH'],['unknown','Unknown']])}
+        ${solverSelect('Format','format',s.format,[['cash','Cash'],['tournament','Tournament'],['unknown','Unknown']])}
+        ${solverField('Table size','tableSize',s.tableSize||'', 'number','1')}
+        ${solverSelect('Decision street','decisionStreet',s.decisionStreet,[['preflop','Preflop'],['flop','Flop'],['turn','Turn'],['river','River'],['unknown','Unknown']])}
+        ${solverField('Hero position','heroPosition',s.heroPosition)}
+        ${solverField('Villain position','villainPosition',s.villainPosition)}
+        ${solverSelect('Hero role','heroRole',s.heroRole,[['OOP','Out of position'],['IP','In position'],['unknown','Unknown']])}
+        ${solverField('Hero cards','heroCards',(s.heroCards||[]).join(' '))}
+        ${solverField('Board','board',(s.board||[]).join(' '))}
+        ${solverField('Pot now (BB)','potAtDecisionBb',s.potAtDecisionBb||'', 'number','0.1')}
+        ${solverField('Effective stack now (BB)','effectiveStackBb',s.effectiveStackBb||'', 'number','0.1')}
+        ${solverField('Pot entering flop (BB)','flopStartPotBb',s.flopStartPotBb||'', 'number','0.1')}
+        ${solverField('Effective stack entering flop','flopStartEffectiveStackBb',s.flopStartEffectiveStackBb||'', 'number','0.1')}
+      </div>
+      <div class="solver-action-editor">
+        <div class="row between"><div><small class="eyebrow">ACTION HISTORY</small><h3>Preflop → decision</h3></div></div>
+        <p>One action per line: <code>street | position | action | amountBB | %pot</code></p>
+        <textarea id="solverActionHistory" spellcheck="false">${esc(actionText)}</textarea>
+        <label class="solver-complete-check"><input id="solverHistoryComplete" type="checkbox" ${s.actionHistoryComplete?'checked':''}><span><strong>Action history is complete</strong><small>No action is missing from preflop through this screenshot decision.</small></span></label>
+      </div>
+      ${notes.length?`<div class="solver-inspection-notes">${notes.map(n=>`<div>• ${esc(n)}</div>`).join('')}</div>`:''}
+    </section>
+    <section class="solver-range-assumption card pad">
+      <div><strong>Standard GTO ranges</strong><small>Inner Game derives the preflop ranges from the full action path, then solves the exact postflop stack/tree.</small></div>
+      <span class="solver-toggle on"><i></i></span>
+    </section>
+    <div class="solver-study-note"><strong>Post-hand study only</strong><span>Never use solver output while a real-money hand is in progress.</span></div>
+    <button class="btn primary solver-run-btn" data-run-solver="${esc(h.id)}" ${ready?'':'disabled'}>Run solver <span>›</span></button>
+    <button class="btn ghost" data-save-solver-spot>Save details</button>`,'sessions');
+}
+function solverStrategyBars(strategy=[]){
+  if(!strategy.length)return '<div class="empty">No mixed-strategy data returned.</div>';
+  return strategy.map(x=>{
+    const freq=Math.max(0,Math.min(1,Number(x.frequency)||0));
+    const action=String(x.action||'Action');
+    const amount=x.amount_bb? ` · ${Number(x.amount_bb).toFixed(1)} BB` : '';
+    return `<div class="solver-strategy-row"><div class="row between"><span>${esc(action)}${esc(amount)}</span><strong>${Math.round(freq*100)}%</strong></div><div class="solver-bar"><i style="width:${Math.max(1,freq*100)}%"></i></div></div>`;
+  }).join('');
+}
+function solverResult(){
+  const h=solverHand();
+  if(!h){route='handsLibrary';return handsLibrary();}
+  if(h.solverStatus==='pending'&&!h.solverResult){
+    return appShell(`${header('GTO <span class="accent">Solution</span>','Your solve is running.')}
+      <section class="card pad solver-running-card"><span class="solver-spinner"></span><strong>Solving the exact spot…</strong><p>Custom trees can take a little while. You can leave this screen; Inner Game will keep the job saved and resume polling later.</p></section>
+      <section class="card pad solver-assumptions"><small class="eyebrow">ASSUMPTIONS</small>${(h.solverJob?.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>`,'sessions');
+  }
+  const s=h.solverResult;
+  if(!s){
+    return appShell(`${header('GTO <span class="accent">Solution</span>','')}
+      <section class="card pad solver-error-card"><strong>Solver unavailable</strong><p>${esc(h.solverError||'The solve could not be completed.')}</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Review spot</button></section>`,'sessions');
+  }
+  const ev=s.evs, bestEv=Number.isFinite(Number(s.bestEv))?Number(s.bestEv):null;
+  return appShell(`${header('GTO <span class="accent">Solution</span>','')}
+    <section class="card pad solver-answer-card">
+      <div><small>Highest-EV action</small><strong>${esc((s.bestAction||'—').toUpperCase())}</strong></div>
+      <div><small>GTO mix</small><strong class="positive">${Math.round((Number(s.bestFrequency)||0)*100)}%</strong></div>
+      ${bestEv!==null?`<div class="solver-best-ev"><small>Best action EV</small><strong>${bestEv.toFixed(3)} BB</strong></div>`:''}
+    </section>
+    <section class="card pad solver-strategy-card"><div class="section-title">GTO strategy</div>${solverStrategyBars(s.strategy||[])}</section>
+    ${ev?`<section class="card pad solver-ev-card"><div class="section-title">Action EVs</div>${(ev.actions||[]).map((a,i)=>`<div class="row between solver-ev-row"><span>${esc(a)}</span><strong>${Number(ev.values?.[i]||0).toFixed(3)} BB</strong></div>`).join('')}</section>`:''}
+    <section class="card pad solver-why-card"><div class="section-title">💡 Why</div><strong>${esc(s.explanation?.summary||'')}</strong><p>${esc(s.explanation?.details||'')}</p>${(s.explanation?.facts||[]).length?`<div class="solver-facts">${s.explanation.facts.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}</section>
+    <section class="card pad solver-assumptions"><div class="section-title">Assumptions</div>${(s.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>
+    <div class="solver-study-note"><strong>Post-hand study only</strong><span>Solver results are for review and training, not live assistance.</span></div>
+    <button class="btn secondary" data-solve-hand="${esc(h.id)}">Review & solve again</button>`,'sessions');
+}
+async function runSolverForHand(id){
+  const h=findHandRecord(id);if(!h)return;
+  solverReviewHandId=id;
+  const spot=collectSolverSpot()||h.solverSpot;
+  const missing=solverMissing(spot);
+  if(missing.length){h.solverError='Complete the highlighted hand details first.';save();render();return;}
+  h.solverError='';h.solverStatus='starting';save();route='solverResult';render();
+  try{
+    const res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/solve',{
+      method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({spot})
+    });
+    const json=await res.json().catch(()=>({}));
+    if(res.status===202&&json.job){
+      h.solverJob=json.job;h.solverStatus='pending';save();render();pollSolverJob(id);return;
+    }
+    if(!res.ok)throw new Error(json.message||json.error||'Solver request failed.');
+    h.solverResult=json.solution;h.solverJob=null;h.solverStatus='solved';save();render();
+  }catch(error){
+    h.solverStatus='failed';h.solverError=String(error?.message||error);save();render();
+  }
+}
+async function pollSolverJob(id){
+  if(solverPolling.has(id))return;
+  const h=findHandRecord(id);if(!h?.solverJob)return;
+  solverPolling.add(id);
+  try{
+    for(let attempt=0;attempt<80;attempt++){
+      const current=findHandRecord(id);if(!current?.solverJob)break;
+      const res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/poll',{
+        method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({job:current.solverJob})
+      });
+      const json=await res.json().catch(()=>({}));
+      if(res.status===202){ await new Promise(resolve=>setTimeout(resolve,2200)); continue; }
+      if(!res.ok)throw new Error(json.message||json.error||'Solver failed.');
+      current.solverResult=json.solution;current.solverJob=null;current.solverStatus='solved';current.solverError='';save();
+      if(route==='solverResult'&&solverReviewHandId===id)render();
+      captureToast('GTO solution ready ✓');
+      return;
+    }
+  }catch(error){
+    const current=findHandRecord(id);
+    if(current){current.solverStatus='failed';current.solverError=String(error?.message||error);save();}
+    if(route==='solverResult'&&solverReviewHandId===id)render();
+  }finally{solverPolling.delete(id);}
+}
+function resumePendingSolverJobs(){
+  allHandsLibrary().forEach(h=>{if(h.solverStatus==='pending'&&h.solverJob)pollSolverJob(h.id);});
+}
+
 function handsSwitcher(active){
   return '<div class="library-switch"><button class="'+(active==='sessions'?'active':'')+'" data-nav="sessions">Sessions</button><button class="'+(active==='hands'?'active':'')+'" data-nav="handsLibrary">Hands</button></div>';
 }
@@ -1106,10 +1333,10 @@ function recommendation(ss){ if(ss.length<3)return 'Keep the routine consistent 
 
 function profile(){ return appShell(`${header('More','Your game, your data, your progress.',false)}<div class="stack">${gamificationPanel()}<section class="card pad"><div class="section-title">Local-first data</div><p class="body-copy">No account and no server are required. Sessions, preparation settings, and insights are stored locally on this phone.</p></section><button class="btn secondary" id="exportData">Export my data</button><button class="btn secondary" id="seedDemo">Add demo sessions</button><button class="btn secondary danger-text" id="clearData">Clear all local data</button></div>`,'profile'); }
 
-function render(){ const app=document.getElementById('app'); app.innerHTML = ({home,prep:prepOverview,breathe,goals,handsIntro,handPlay,handExplain,handsComplete,review,active:activeSession,log:logSession,sessions,sessionDetail,editSession,insights,captureReview,sessionHands,handsLibrary,handDetail,profile}[route]||home)(); bind(); hydrateHandImages(); if(route==='active')startSessionTicker(); }
+function render(){ const app=document.getElementById('app'); app.innerHTML = ({home,prep:prepOverview,breathe,goals,handsIntro,handPlay,handExplain,handsComplete,review,active:activeSession,log:logSession,sessions,sessionDetail,editSession,insights,captureReview,sessionHands,handsLibrary,handDetail,solverReview,solverResult,profile}[route]||home)(); bind(); hydrateHandImages(); if(route==='active')startSessionTicker(); }
 function bind(){
   document.querySelectorAll('[data-nav]').forEach(el=>el.onclick=()=>navigate(el.dataset.nav));
-  document.querySelectorAll('[data-back]').forEach(el=>el.onclick=()=>navigate(route==='handDetail'?handReturnRoute:route==='handsLibrary'?'sessions':route==='sessionDetail'?'sessions':route==='sessionHands'?(selectedSessionHandsId==='active'?'active':'sessions'):route==='captureReview'?(selectedHandId?'handDetail':'active'):route==='editSession'?'sessions':route==='log'||route==='active'?'home':route==='breathe'?'prep':route==='goals'?'breathe':route==='handsIntro'?'goals':route==='handPlay'?'handsIntro':route==='handExplain'?'handPlay':route==='handsComplete'?'handsIntro':route==='review'?'handsIntro':'home'));
+  document.querySelectorAll('[data-back]').forEach(el=>el.onclick=()=>navigate(route==='solverReview'||route==='solverResult'?'handDetail':route==='handDetail'?handReturnRoute:route==='handsLibrary'?'sessions':route==='sessionDetail'?'sessions':route==='sessionHands'?(selectedSessionHandsId==='active'?'active':'sessions'):route==='captureReview'?(selectedHandId?'handDetail':'active'):route==='editSession'?'sessions':route==='log'||route==='active'?'home':route==='breathe'?'prep':route==='goals'?'breathe':route==='handsIntro'?'goals':route==='handPlay'?'handsIntro':route==='handExplain'?'handPlay':route==='handsComplete'?'handsIntro':route==='review'?'handsIntro':'home'));
   document.querySelectorAll('[data-start-prep]').forEach(el=>el.onclick=beginPreparation);
   document.querySelectorAll('[data-breath-level]').forEach(el=>el.onclick=()=>{ breathLevel=el.dataset.breathLevel; state.prep.breathLevel=breathLevel; save(); resetBreath(); });
   document.querySelectorAll('[data-breath-workout]').forEach(el=>el.onclick=()=>{ breathWorkout=el.dataset.breathWorkout; state.prep.breathWorkout=breathWorkout; save(); resetBreath(); });
@@ -1178,6 +1405,16 @@ function bind(){
     document.querySelectorAll('[data-open-session-hands]').forEach(el=>{const open=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');};el.onclick=e=>{e.stopPropagation();open();};el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-open-library-session]').forEach(el=>{const open=()=>{selectedSessionHandsId=el.dataset.openLibrarySession;navigate('sessionHands');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-open-hand]').forEach(el=>{const open=()=>{handReturnRoute=route;selectedHandId=el.dataset.openHand;navigate('handDetail');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
+  document.querySelectorAll('[data-solve-hand]').forEach(el=>el.onclick=()=>{
+    const id=el.dataset.solveHand;
+    const h=findHandRecord(id);if(!h)return;
+    solverReviewHandId=id;selectedHandId=id;
+    if(h.solverResult && route==='handDetail'){navigate('solverResult');return;}
+    inspectHandForSolver(id,false);
+  });
+  document.querySelectorAll('[data-reinspect-solver]').forEach(el=>el.onclick=()=>inspectHandForSolver(el.dataset.reinspectSolver,true));
+  const saveSolverSpot=document.querySelector('[data-save-solver-spot]');if(saveSolverSpot)saveSolverSpot.onclick=()=>{collectSolverSpot();captureToast('Solver details saved ✓');render();};
+  document.querySelectorAll('[data-run-solver]').forEach(el=>el.onclick=()=>runSolverForHand(el.dataset.runSolver));
   document.querySelectorAll('[data-save-hand-notes]').forEach(el=>el.onclick=()=>{const h=findHandRecord(el.dataset.saveHandNotes);if(!h)return;h.notes=(document.getElementById('handNotes')?.value||'').trim();save();const hint=document.getElementById('notesSavedHint');if(hint){hint.textContent='Saved';setTimeout(()=>{if(hint)hint.textContent='';},1600);}captureToast('Note saved ✓');});
   document.querySelectorAll('[data-edit-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.editHand);if(pendingCapturedHand)navigate('captureReview');});
   document.querySelectorAll('[data-delete-hand]').forEach(el=>el.onclick=()=>{removeCapturedHand(el.dataset.deleteHand);selectedHandId=null;navigate(handReturnRoute==='handDetail'?'handsLibrary':handReturnRoute);});
@@ -1194,3 +1431,4 @@ function seedDemo(){ if(state.sessions.length)return; const rows=[[500,820,8,2,2
 save();
 syncAutoScreenshotWatcher();
 render();
+setTimeout(resumePendingSolverJobs,700);
