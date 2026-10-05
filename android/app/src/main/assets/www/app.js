@@ -208,8 +208,13 @@ function normalizeCapturedTitle(parsed, fallback='Captured hand'){
 }
 function captureToast(text,type='ok'){let t=document.getElementById('captureToast');if(!t){t=document.createElement('div');t.id='captureToast';document.body.appendChild(t);}t.className='capture-toast '+type;t.textContent=text;requestAnimationFrame(()=>t.classList.add('show'));setTimeout(()=>t.classList.remove('show'),3000);}
 function notifyHandStatus(stage,hand){
-  const title=stage==='analyzing'?'Poker hand captured':stage==='saved'?'Hand saved':stage==='failed'?'Hand needs attention':'Inner Game';
-  const body=stage==='analyzing'?'Screenshot detected. Analyzing the hand now…':stage==='saved'?((hand&&hand.title?hand.title+' · ':'')+'Saved to Inner Game.'):'The screenshot was saved, but analysis needs another try.';
+  const title=stage==='analyzing'?'Poker hand detected':stage==='saved'?'Hand saved':stage==='failed'?'Hand needs attention':'Inner Game';
+  const handTitle=hand&&normalizeCapturedTitle(hand,handDisplayTitle(hand));
+  const body=stage==='analyzing'
+    ? 'Screenshot captured. Analyzing the hand…'
+    : stage==='saved'
+      ? ((handTitle&&handTitle!=='Analyzing hand…'?handTitle+' · ':'')+(hand?.sessionId?'Saved to this session.':'Saved to Hands.'))
+      : 'The screenshot is saved. Tap to retry analysis.';
   nativeCall('notifyHand',{stage,title,body,handId:hand?.id||''});
 }
 function findHandRecord(id){
@@ -340,6 +345,14 @@ function removeCapturedHand(id){
   save();
 }
 window.innerGameReceiveScreenshot=(dataUrl,source='native')=>analyzeCapturedScreenshot(dataUrl,source);
+window.innerGameOpenHand=(id)=>{
+  const hand=findHandRecord(id);
+  if(!hand)return false;
+  selectedHandId=id;
+  handReturnRoute='handsLibrary';
+  navigate('handDetail');
+  return true;
+};
 function captureReview(){
   const h=pendingCapturedHand;if(!h){route='active';return activeSession();}
   return appShell(`${header('Review <span class="accent">Hand</span>','Check the extracted details before saving.')}
@@ -365,31 +378,38 @@ function pokerCardChip(card){
 }
 function handDetail(){
   const h=selectedHand();
-  if(!h){route='sessionHands';return sessionHands();}
+  if(!h){route='handsLibrary';return handsLibrary();}
   const status=h.status||'ready';
-  const statusLabel=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review recommended':'Saved automatically';
+  const statusLabel=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review recommended':'Saved';
   const title=normalizeCapturedTitle(h,handDisplayTitle(h));
   const hero=(h.heroCards||[]), board=(h.board||[]);
-  const meta=[h.site,h.blinds||h.stakes,h.heroPosition].filter(Boolean);
-  return appShell(`${header('<span class="accent">Hand</span>','Captured, parsed, and attached to your poker timeline.')}
-    <section class="hand-detail-hero card">
+  const meta=[h.site,h.blinds||h.stakes].filter(Boolean);
+  return appShell(`${header('<span class="accent">Hand</span>','')}
+    <section class="hand-b-hero card">
       <img data-hand-image-key="${esc(h.imageKey)}" alt="Poker hand screenshot">
-      <div class="hand-detail-overlay"><span class="hand-status ${esc(status)}">${esc(statusLabel)}</span></div>
+      <div class="hand-b-status"><span class="hand-status ${esc(status)}">${esc(statusLabel)}</span></div>
     </section>
-    <section class="hand-detail-intro">
-      <div class="hand-kind">${h.gameType==='tournament'?'TOURNAMENT':'CAPTURED HAND'}</div>
+    <section class="hand-b-title">
+      <div class="hand-kind">${h.gameType==='tournament'?'TOURNAMENT':'POKER HAND'}</div>
       <h2>${esc(title)}</h2>
-      <div class="hand-meta-chips">${meta.map(x=>`<span>${esc(x)}</span>`).join('')}</div>
-      ${h.visibleEventText&&cleanVisibleTournamentText(h.visibleEventText)!==title?`<p class="visible-event-text">Detected table text: “${esc(h.visibleEventText)}”</p>`:''}
+      <div class="hand-b-meta">${meta.map(x=>`<span>${esc(x)}</span>`).join('')}<span>${new Date(h.capturedAt||Date.now()).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span></div>
     </section>
-    <section class="card hand-cards-panel">
-      <div class="hand-card-group"><span>Hero</span><div class="poker-card-row">${hero.length?hero.map(pokerCardChip).join(''):'<b>—</b>'}</div></div>
-      <div class="hand-card-group"><span>Board</span><div class="poker-card-row">${board.length?board.map(pokerCardChip).join(''):'<b>—</b>'}</div></div>
-      <div class="hand-card-group compact"><span>Pot</span><strong>${esc(h.pot||'—')}</strong></div>
+    <section class="hand-b-table card">
+      <div class="hand-b-hero-cards">
+        <small>HERO</small>
+        <div class="poker-card-row">${hero.length?hero.map(pokerCardChip).join(''):'<b>—</b>'}</div>
+      </div>
+      <div class="hand-b-board">
+        <small>BOARD</small>
+        <div class="poker-card-row">${board.length?board.map(pokerCardChip).join(''):'<b>—</b>'}</div>
+      </div>
+      <div class="hand-b-pot"><small>POT</small><strong>${esc(h.pot||'—')}</strong></div>
     </section>
-    ${h.description?`<section class="card pad hand-copy-card"><small class="eyebrow">WHAT WE SAW</small><p>${esc(h.description)}</p></section>`:''}
-    ${h.actionSummary?`<section class="card pad hand-copy-card"><small class="eyebrow">VISIBLE ACTION</small><p>${esc(h.actionSummary)}</p></section>`:''}
-    <div class="hand-detail-footer"><span>Captured ${new Date(h.capturedAt||Date.now()).toLocaleString()}</span>${h.confidence?`<span>${Math.round(h.confidence*100)}% confidence</span>`:''}</div>
+    <section class="card pad hand-notes-card">
+      <div class="row between"><div><small class="eyebrow">NOTES</small><div class="hand-notes-title">Your read on the hand</div></div><span class="notes-saved-hint" id="notesSavedHint"></span></div>
+      <textarea id="handNotes" placeholder="Add a note, thought, question, or something to review later…">${esc(h.notes||'')}</textarea>
+      <button class="btn secondary hand-notes-save" data-save-hand-notes="${esc(h.id)}">Save Note</button>
+    </section>
     <div class="hand-detail-actions">
       ${status==='failed'?`<button class="btn primary" data-retry-hand="${esc(h.id)}">Retry Analysis</button>`:''}
       <button class="btn secondary" data-edit-hand="${esc(h.id)}">Edit Details</button>
@@ -399,43 +419,57 @@ function handDetail(){
 function handsSwitcher(active){
   return '<div class="library-switch"><button class="'+(active==='sessions'?'active':'')+'" data-nav="sessions">Sessions</button><button class="'+(active==='hands'?'active':'')+'" data-nav="handsLibrary">Hands</button></div>';
 }
+function handLibraryTime(h){
+  const d=new Date(h.capturedAt||Date.now());
+  return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+}
+function handLibraryGroup(h){
+  const d=new Date(h.capturedAt||Date.now()), now=new Date();
+  const today=d.toDateString()===now.toDateString();
+  if(today)return 'Today';
+  const yesterday=new Date(now);yesterday.setDate(now.getDate()-1);
+  if(d.toDateString()===yesterday.toDateString())return 'Yesterday';
+  return d.toLocaleDateString([], {month:'long',day:'numeric'});
+}
 function handsLibrary(){
   const all=allHandsLibrary().filter(h=>!h.autoCandidate);
   const rows=all.filter(h=>handsFilter==='all'||(handsFilter==='session'&&h._scope==='session')||(handsFilter==='general'&&h._scope==='general'));
-  const sessionCount=all.filter(h=>h._scope==='session').length, generalCount=all.filter(h=>h._scope==='general').length;
-  return appShell(`${header('Poker <span class="accent">Hands</span>','Every captured hand, in one place.',false)}
+  const groups=[];
+  rows.forEach(h=>{const label=handLibraryGroup(h);let g=groups.find(x=>x.label===label);if(!g){g={label,rows:[]};groups.push(g);}g.rows.push(h);});
+  return appShell(`${header('Saved <span class="accent">Hands</span>','Your poker screenshots, clean and searchable.',false)}
     ${handsSwitcher('hands')}
-    <section class="hands-library-hero card pad">
-      <div><small>HAND LIBRARY</small><h2>${all.length} saved</h2><p>Session screenshots are linked automatically. Shared or dropped screenshots stay unassigned.</p></div>
-      <div class="hands-library-counts"><span><b>${sessionCount}</b> Session</span><span><b>${generalCount}</b> Unassigned</span></div>
+    <section class="hands-a-toolbar">
+      <div class="hand-filter-pills a-segmented">${[['all','All Hands'],['session','Session'],['general','Unassigned']].map(([v,l])=>`<button class="${handsFilter===v?'active':''}" data-hands-filter="${v}">${l}</button>`).join('')}</div>
     </section>
-    <section class="hand-drop-zone" id="handDropZone"><strong>Drop a poker screenshot here</strong><span>Desktop: drag & drop · Mobile: Share → Inner Game</span></section>
-    <div class="hand-filter-pills">${[['all','All'],['session','Session'],['general','Unassigned']].map(([v,l])=>`<button class="${handsFilter===v?'active':''}" data-hands-filter="${v}">${l}</button>`).join('')}</div>
-    <div class="captured-hands-list">${rows.length?rows.map(h=>handCard(h,true)).join(''):'<div class="notice">No hands match this filter.</div>'}</div>`,'sessions');
+    <section class="hand-drop-zone compact" id="handDropZone"><strong>Add a hand</strong><span>Drop a screenshot here · or Share → Inner Game</span></section>
+    <div class="hands-a-groups">${groups.length?groups.map(g=>`<section class="hands-a-group"><div class="hands-a-group-title"><strong>${esc(g.label)}</strong><span>${g.rows.length} hand${g.rows.length===1?'':'s'}</span></div><div class="captured-hands-list">${g.rows.map(h=>handCard(h,true,true)).join('')}</div></section>`).join(''):'<div class="notice">No hands match this filter.</div>'}</div>`,'sessions');
 }
 function sessionHands(){
   const target=selectedSessionHandsId==='active'?state.activeSession:state.sessions.find(s=>s.id===selectedSessionHandsId);
   if(!target){route='sessions';return sessions();}
   const hands=allSessionHands(target).filter(h=>!h.autoCandidate);
-  const analyzing=hands.filter(h=>h.status==='analyzing').length;
-  const attention=hands.filter(h=>h.status==='failed'||h.reviewNeeded).length;
-  return appShell(`${header('Session <span class="accent">Hands</span>',`${hands.length} screenshot${hands.length===1?'':'s'} saved automatically`)}
-    ${hands.length?`<section class="hands-summary"><div><strong>${hands.length}</strong><span>Saved</span></div><div><strong>${analyzing}</strong><span>Analyzing</span></div><div><strong>${attention}</strong><span>Needs attention</span></div></section>`:''}
-    <div class="captured-hands-list">${hands.length?hands.slice().reverse().map(handCard).join(''):'<div class="notice"><strong>No captured hands yet.</strong><br>Take a poker screenshot and share it to Inner Game. It will appear here immediately.</div>'}</div>`,'sessions');
+  const subtitle=selectedSessionHandsId==='active'
+    ? 'Hands captured during your current session.'
+    : [target.date,target.game,target.room].filter(Boolean).join(' · ');
+  return appShell(`${header('Session <span class="accent">Hands</span>',subtitle)}
+    <div class="captured-hands-list session-hands-list">${hands.length?hands.slice().reverse().map(h=>handCard(h,false,false)).join(''):'<div class="notice"><strong>No hands yet.</strong><br>Poker screenshots captured during this session will appear here automatically.</div>'}</div>`,'sessions');
 }
-function handCard(h,showScope=false){
+function handCard(h,showScope=false,libraryMode=false){
   const status=h.status||'ready';
   const statusText=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review':'Saved';
   const title=normalizeCapturedTitle(h,handDisplayTitle(h));
   const cards=(h.heroCards||[]).map(pokerCardChip).join('');
-  return `<article class="card captured-hand-card ${esc(status)}" data-open-hand="${esc(h.id)}" role="button" tabindex="0" aria-label="Open ${esc(title)}">
+  const scope=showScope?h._sessionLabel:'';
+  const attr=libraryMode&&h._scope==='session'
+    ? `data-open-library-session="${esc(h._sessionActive?'active':h._sessionId||'')}"`
+    : `data-open-hand="${esc(h.id)}"`;
+  return `<article class="card captured-hand-card option-a ${esc(status)}" ${attr} role="button" tabindex="0" aria-label="${libraryMode&&h._scope==='session'?'Open session hands':'Open '+esc(title)}">
     <img data-hand-image-key="${esc(h.imageKey)}" alt="">
     <div class="captured-hand-copy">
-      <div class="hand-card-top"><strong>${esc(title)}</strong><span class="hand-status ${esc(status)}">${esc(statusText)}</span></div>
-      <small>${esc([showScope?h._sessionLabel:null,h.site,h.blinds||h.stakes,h.heroPosition].filter(Boolean).join(' · ')||'Captured screenshot')}</small>
+      <div class="hand-card-top"><strong>${esc(title)}</strong><time>${esc(handLibraryTime(h))}</time></div>
+      <small>${esc([scope,h.site,h.blinds||h.stakes].filter(Boolean).join(' · ')||'Poker hand')}</small>
       ${cards?`<div class="mini-card-row">${cards}</div>`:''}
-      <p>${esc(h.description||h.actionSummary||'Screenshot saved. Tap to open.')}</p>
-      <span class="hand-open-affordance">View hand <b>›</b></span>
+      <div class="hand-a-bottom"><span class="hand-status ${esc(status)}">${esc(statusText)}</span><span class="hand-open-affordance">${libraryMode&&h._scope==='session'?'Open session':'View hand'} <b>›</b></span></div>
     </div>
   </article>`;
 }
@@ -921,7 +955,9 @@ function bind(){
   document.querySelectorAll('[data-hands-filter]').forEach(el=>el.onclick=()=>{handsFilter=el.dataset.handsFilter;render();});
   const dropZone=document.getElementById('handDropZone'); if(dropZone){dropZone.ondragover=e=>{e.preventDefault();dropZone.classList.add('dragging');};dropZone.ondragleave=()=>dropZone.classList.remove('dragging');dropZone.ondrop=e=>{e.preventDefault();dropZone.classList.remove('dragging');const file=[...(e.dataTransfer?.files||[])].find(f=>f.type.startsWith('image/'));if(!file)return;const reader=new FileReader();reader.onload=()=>window.innerGameReceiveScreenshot(reader.result,'desktop_drop');reader.readAsDataURL(file);};}
     document.querySelectorAll('[data-open-session-hands]').forEach(el=>{const open=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');};el.onclick=e=>{e.stopPropagation();open();};el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
+  document.querySelectorAll('[data-open-library-session]').forEach(el=>{const open=()=>{selectedSessionHandsId=el.dataset.openLibrarySession;navigate('sessionHands');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-open-hand]').forEach(el=>{const open=()=>{handReturnRoute=route;selectedHandId=el.dataset.openHand;navigate('handDetail');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
+  document.querySelectorAll('[data-save-hand-notes]').forEach(el=>el.onclick=()=>{const h=findHandRecord(el.dataset.saveHandNotes);if(!h)return;h.notes=(document.getElementById('handNotes')?.value||'').trim();save();const hint=document.getElementById('notesSavedHint');if(hint){hint.textContent='Saved';setTimeout(()=>{if(hint)hint.textContent='';},1600);}captureToast('Note saved ✓');});
   document.querySelectorAll('[data-edit-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.editHand);if(pendingCapturedHand)navigate('captureReview');});
   document.querySelectorAll('[data-delete-hand]').forEach(el=>el.onclick=()=>{removeCapturedHand(el.dataset.deleteHand);selectedHandId=null;navigate(handReturnRoute==='handDetail'?'handsLibrary':handReturnRoute);});
   const saveCapture=document.querySelector('[data-save-capture]'); if(saveCapture)saveCapture.onclick=()=>{ if(!pendingCapturedHand)return; const editedId=pendingCapturedHand.id; document.querySelectorAll('[data-capture-field]').forEach(el=>{const k=el.dataset.captureField;let v=el.value;if(k==='heroCards'||k==='board')v=v.trim().split(/\s+/).filter(Boolean);pendingCapturedHand[k]=v;}); pendingCapturedHand.title=normalizeCapturedTitle(pendingCapturedHand,pendingCapturedHand.title); pendingCapturedHand.userEdited=true; pendingCapturedHand.reviewNeeded=false; pendingCapturedHand.status='ready'; save(); pendingCapturedHand=null; captureToast('Hand updated ✓'); selectedHandId=editedId; navigate('handDetail'); };
