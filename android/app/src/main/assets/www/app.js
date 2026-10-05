@@ -629,6 +629,7 @@ function solverMissing(spot){
   const missing=[];
   if(spot.game!=='NLH')missing.push('No-limit Hold’em');
   if(!(Number(spot.tableSize)>=2))missing.push('Table size');
+  else if(Number(spot.tableSize)!==6)missing.push('Current solver provider supports 6-max NLH');
   if(!spot.heroPosition)missing.push('Hero position');
   if(!spot.decisionStreet||spot.decisionStreet==='unknown')missing.push('Decision street');
   if(!Array.isArray(spot.heroCards)||spot.heroCards.length!==2)missing.push('Hero cards');
@@ -757,7 +758,7 @@ function solverStrategyBars(strategy=[]){
 function solverResult(){
   const h=solverHand();
   if(!h){route='handsLibrary';return handsLibrary();}
-  if(h.solverStatus==='pending'&&!h.solverResult){
+  if(['starting','pending'].includes(h.solverStatus)&&!h.solverResult){
     return appShell(`${header('GTO <span class="accent">Solution</span>','Your solve is running.')}
       <section class="card pad solver-running-card"><span class="solver-spinner"></span><strong>Solving the exact spot…</strong><p>Custom trees can take a little while. You can leave this screen; Inner Game will keep the job saved and resume polling later.</p></section>
       <section class="card pad solver-assumptions"><small class="eyebrow">ASSUMPTIONS</small>${(h.solverJob?.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>`,'sessions');
@@ -1432,3 +1433,4 @@ save();
 syncAutoScreenshotWatcher();
 render();
 setTimeout(resumePendingSolverJobs,700);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumePendingSolverJobs();});
