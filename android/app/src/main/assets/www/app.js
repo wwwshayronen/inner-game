@@ -3,6 +3,7 @@ const LEGACY_STORAGE_KEYS = ['innerGame.v4','innerGame.v3','innerGame.v2','inner
 const GOALS = ['Stay patient','No results checking','Mark tough spots','Take 3 breaths after big pots','Stick to bankroll','Quit if tilted'];
 const defaults = {
   sessions: [],
+  generalHands: [],
   games:['NL100'],
   rooms:['GG Poker','Live Casino'],
   prep: {
@@ -32,6 +33,7 @@ let moneyGame = 'all';
 let pendingCapturedHand = null;
 let selectedSessionHandsId = null;
 let selectedHandId = null;
+let handsFilter = 'all';
 const HAND_ANALYSIS_API_URL = localStorage.getItem('innerGame.handApiUrl') || 'https://inner-game-production.up.railway.app';
 const BREATH_WORKOUTS = {
   focus:{name:'Focus',short:'Box breathing',description:'Steady attention before you play.',phases:[
@@ -175,6 +177,15 @@ async function resizeScreenshot(dataUrl,max=1280,quality=.78){
   return new Promise(resolve=>{const img=new Image();img.onload=()=>{let w=img.width,h=img.height;if(Math.max(w,h)>max){const s=max/Math.max(w,h);w=Math.round(w*s);h=Math.round(h*s);}const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');x.drawImage(img,0,0,w,h);resolve(c.toDataURL('image/jpeg',quality));};img.onerror=()=>resolve(dataUrl);img.src=dataUrl;});
 }
 function allSessionHands(session){return Array.isArray(session?.hands)?session.hands:[];}
+function generalHands(){ if(!Array.isArray(state.generalHands))state.generalHands=[]; return state.generalHands; }
+function isManualHandSource(source=''){return /share|drop|manual/i.test(String(source));}
+function allHandsLibrary(){
+  const out=[];
+  generalHands().forEach(h=>out.push({...h,_scope:'general',_sessionLabel:'Unassigned'}));
+  if(state.activeSession) allSessionHands(state.activeSession).forEach(h=>out.push({...h,_scope:'session',_sessionActive:true,_sessionLabel:'Active session'}));
+  state.sessions.forEach(s=>allSessionHands(s).forEach(h=>out.push({...h,_scope:'session',_sessionId:s.id,_sessionLabel:[s.date,s.game].filter(Boolean).join(' · ')})));
+  return out.sort((a,b)=>(b.capturedAt||0)-(a.capturedAt||0));
+}
 function handDisplayTitle(h){return h.tournamentName||h.title||[h.stakes,h.site].filter(Boolean).join(' · ')||'Captured hand';}
 function handCardsText(h){return [...(h.heroCards||[]),...(h.board||[])].join(' ');}
 function cleanVisibleTournamentText(v=''){
@@ -201,10 +212,11 @@ function findHandRecord(id){
     const found=allSessionHands(session).find(h=>h.id===id);
     if(found)return found;
   }
-  return null;
+  const general=generalHands().find(h=>h.id===id);
+  return general||null;
 }
 function refreshCaptureUi(){
-  if(route==='active'||route==='sessionHands'||route==='captureReview')render();
+  if(['active','sessionHands','captureReview','handsLibrary','handDetail'].includes(route))render();
 }
 async function analyzeStoredHand(handId,dataUrl){
   const hand=findHandRecord(handId);
@@ -232,23 +244,14 @@ async function analyzeStoredHand(handId,dataUrl){
     try{ parsed=await res.json(); }catch{}
     if(!res.ok) throw new Error(parsed?.error||('HTTP '+res.status));
     if(!parsed.isPokerHand){
-      Object.assign(hand,{
-        status:'needs_review',
-        reviewNeeded:true,
-        confidence:Number(parsed.confidence)||0,
-        title:'Unrecognized screenshot',
-        description:'The screenshot is saved, but the poker hand could not be recognized confidently.',
-        uncertainFields:parsed.uncertainFields||[]
-      });
-      pendingCapturedHand=hand;
-      save();
-      refreshCaptureUi();
-      captureToast('Screenshot saved · review needed','error');
-      return;
+      if(hand.autoCandidate){ removeCapturedHand(hand.id); refreshCaptureUi(); captureToast('Screenshot ignored · not a poker hand'); return; }
+      Object.assign(hand,{status:'needs_review',reviewNeeded:true,confidence:Number(parsed.confidence)||0,title:'Unrecognized screenshot',description:'The screenshot is saved, but the poker hand could not be recognized confidently.',uncertainFields:parsed.uncertainFields||[]});
+      pendingCapturedHand=hand; save(); refreshCaptureUi(); captureToast('Saved · review needed','error'); return;
     }
     Object.assign(hand,parsed,{
       title:normalizeCapturedTitle(parsed,hand.title),
       tournamentName:cleanVisibleTournamentText(parsed.tournamentName||parsed.visibleEventText||''),
+      autoCandidate:false,
       status:'ready',
       error:'',
       reviewNeeded:false
@@ -275,7 +278,6 @@ async function analyzeStoredHand(handId,dataUrl){
   }
 }
 async function analyzeCapturedScreenshot(dataUrl,source='native'){
-  if(!state.activeSession){captureToast('Start a session before capturing a hand.','error');return;}
   const compact=await resizeScreenshot(dataUrl);
   const id=crypto.randomUUID?.()||String(Date.now());
   const provisional={
@@ -290,7 +292,8 @@ async function analyzeCapturedScreenshot(dataUrl,source='native'){
     confidence:0,
     heroCards:[],
     board:[],
-    uncertainFields:[]
+    uncertainFields:[],
+    autoCandidate:!isManualHandSource(source)
   };
   try{
     await storeHandImage(provisional.imageKey,compact);
@@ -304,16 +307,23 @@ async function analyzeCapturedScreenshot(dataUrl,source='native'){
   }
 }
 function saveCapturedHand(hand){
-  if(!state.activeSession)return;
-  state.activeSession.hands=allSessionHands(state.activeSession);
-  const existing=state.activeSession.hands.find(x=>x.id===hand.id);
-  if(existing)Object.assign(existing,hand);
-  else state.activeSession.hands.push({...hand,userEdited:Boolean(hand.userEdited)});
+  const manual=isManualHandSource(hand.source);
+  if(!manual && state.activeSession){
+    state.activeSession.hands=allSessionHands(state.activeSession);
+    const existing=state.activeSession.hands.find(x=>x.id===hand.id);
+    if(existing)Object.assign(existing,hand);
+    else state.activeSession.hands.push({...hand,sessionId:'active',userEdited:Boolean(hand.userEdited)});
+  }else{
+    const existing=generalHands().find(x=>x.id===hand.id);
+    if(existing)Object.assign(existing,hand);
+    else generalHands().push({...hand,sessionId:null,userEdited:Boolean(hand.userEdited)});
+  }
   save();
 }
 function removeCapturedHand(id){
   if(state.activeSession)state.activeSession.hands=allSessionHands(state.activeSession).filter(h=>h.id!==id);
   state.sessions.forEach(s=>{if(Array.isArray(s.hands))s.hands=s.hands.filter(h=>h.id!==id);});
+  state.generalHands=generalHands().filter(h=>h.id!==id);
   save();
 }
 window.innerGameReceiveScreenshot=(dataUrl,source='native')=>analyzeCapturedScreenshot(dataUrl,source);
@@ -373,17 +383,34 @@ function handDetail(){
       <button class="btn ghost danger-text" data-delete-hand="${esc(h.id)}">Delete Hand</button>
     </div>`,'sessions');
 }
+function handsSwitcher(active){
+  return '<div class="library-switch"><button class="'+(active==='sessions'?'active':'')+'" data-nav="sessions">Sessions</button><button class="'+(active==='hands'?'active':'')+'" data-nav="handsLibrary">Hands</button></div>';
+}
+function handsLibrary(){
+  const all=allHandsLibrary().filter(h=>!h.autoCandidate);
+  const rows=all.filter(h=>handsFilter==='all'||(handsFilter==='session'&&h._scope==='session')||(handsFilter==='general'&&h._scope==='general'));
+  const sessionCount=all.filter(h=>h._scope==='session').length, generalCount=all.filter(h=>h._scope==='general').length;
+  return appShell(`${header('Poker <span class="accent">Hands</span>','Every captured hand, in one place.',false)}
+    ${handsSwitcher('hands')}
+    <section class="hands-library-hero card pad">
+      <div><small>HAND LIBRARY</small><h2>${all.length} saved</h2><p>Session screenshots are linked automatically. Shared or dropped screenshots stay unassigned.</p></div>
+      <div class="hands-library-counts"><span><b>${sessionCount}</b> Session</span><span><b>${generalCount}</b> Unassigned</span></div>
+    </section>
+    <section class="hand-drop-zone" id="handDropZone"><strong>Drop a poker screenshot here</strong><span>Desktop: drag & drop · Mobile: Share → Inner Game</span></section>
+    <div class="hand-filter-pills">${[['all','All'],['session','Session'],['general','Unassigned']].map(([v,l])=>`<button class="${handsFilter===v?'active':''}" data-hands-filter="${v}">${l}</button>`).join('')}</div>
+    <div class="captured-hands-list">${rows.length?rows.map(h=>handCard(h,true)).join(''):'<div class="notice">No hands match this filter.</div>'}</div>`,'sessions');
+}
 function sessionHands(){
   const target=selectedSessionHandsId==='active'?state.activeSession:state.sessions.find(s=>s.id===selectedSessionHandsId);
   if(!target){route='sessions';return sessions();}
-  const hands=allSessionHands(target);
+  const hands=allSessionHands(target).filter(h=>!h.autoCandidate);
   const analyzing=hands.filter(h=>h.status==='analyzing').length;
   const attention=hands.filter(h=>h.status==='failed'||h.reviewNeeded).length;
   return appShell(`${header('Session <span class="accent">Hands</span>',`${hands.length} screenshot${hands.length===1?'':'s'} saved automatically`)}
     ${hands.length?`<section class="hands-summary"><div><strong>${hands.length}</strong><span>Saved</span></div><div><strong>${analyzing}</strong><span>Analyzing</span></div><div><strong>${attention}</strong><span>Needs attention</span></div></section>`:''}
     <div class="captured-hands-list">${hands.length?hands.slice().reverse().map(handCard).join(''):'<div class="notice"><strong>No captured hands yet.</strong><br>Take a poker screenshot and share it to Inner Game. It will appear here immediately.</div>'}</div>`,'sessions');
 }
-function handCard(h){
+function handCard(h,showScope=false){
   const status=h.status||'ready';
   const statusText=status==='analyzing'?'Analyzing…':status==='failed'?'Analysis failed':h.reviewNeeded?'Review':'Saved';
   const title=normalizeCapturedTitle(h,handDisplayTitle(h));
@@ -392,7 +419,7 @@ function handCard(h){
     <img data-hand-image-key="${esc(h.imageKey)}" alt="">
     <div class="captured-hand-copy">
       <div class="hand-card-top"><strong>${esc(title)}</strong><span class="hand-status ${esc(status)}">${esc(statusText)}</span></div>
-      <small>${esc([h.site,h.blinds||h.stakes,h.heroPosition].filter(Boolean).join(' · ')||'Captured screenshot')}</small>
+      <small>${esc([showScope?h._sessionLabel:null,h.site,h.blinds||h.stakes,h.heroPosition].filter(Boolean).join(' · ')||'Captured screenshot')}</small>
       ${cards?`<div class="mini-card-row">${cards}</div>`:''}
       <p>${esc(h.description||h.actionSummary||'Screenshot saved. Tap to open.')}</p>
       <span class="hand-open-affordance">View hand <b>›</b></span>
@@ -410,6 +437,7 @@ async function retryCapturedHand(id){
 }
 function triggerNativeCapture(){nativeCall('captureHand',{});}
 
+function syncAutoScreenshotWatcher(){nativeCall('setAutoScreenshotEnabled',{enabled:true});}
 function scheduleBreakReminders(){ if(!state.activeSession)return; nativeCall('scheduleBreakReminders',{startedAt:state.activeSession.startedAt, intervalMinutes:60, breakMinutes:5}); }
 function cancelBreakReminders(){ nativeCall('cancelBreakReminders'); }
 
@@ -694,7 +722,7 @@ function activeSession(){
     </section>
     <section class="card pad session-summary"><div class="summary-row"><span>Started with</span><strong>${money(a.startedAmount)}</strong></div><div class="summary-row"><span>Room</span><strong>${esc(a.room||'—')}</strong></div><div class="summary-row"><span>Date</span><strong>${esc(a.date)}</strong></div></section>
     <div class="goal-review-live"><small>YOUR GOALS</small>${(a.prep?.goals||[]).filter(Boolean).map(g=>`<div>✓ ${esc(g)}</div>`).join('')||'<div>Keep your decisions deliberate.</div>'}</div>
-    <section class="card pad active-hands-card"><div class="row between"><div><strong>Session Hands</strong><div class="session-meta">${allSessionHands(a).length} captured</div></div><button class="btn secondary compact" data-capture-hand>Capture Hand</button></div>${allSessionHands(a).length?'<button class="session-hands-link" data-open-active-hands>View saved hands →</button>':''}</section>
+    <section class="card pad active-hands-card"><div class="row between"><div><strong>Session Hands</strong><div class="session-meta">${allSessionHands(a).filter(h=>!h.autoCandidate).length} captured</div></div><button class="btn secondary compact" data-capture-hand>Capture Hand</button></div>${allSessionHands(a).filter(h=>!h.autoCandidate).length?'<button class="session-hands-link" data-open-active-hands>View saved hands →</button>':''}</section>
     <button class="btn primary" data-finish-session>Finish Session <span>→</span></button>
     <button class="btn ghost" data-nav="home">Back to Home</button>`, 'home');
 }
@@ -760,13 +788,22 @@ function gamificationPanel(){
 function sessions(){
   const list=[...state.sessions].reverse();
   return appShell(`${header('Sessions','Track your play. Find progress.',false)}
+  ${handsSwitcher('sessions')}
   ${moneyGraph()}
   ${gamificationPanel()}
   <section class="card pad"><div class="metrics"><div class="metric"><small>Total Sessions</small><strong>${list.length}</strong></div><div class="metric"><small>Avg Process Score</small><strong>${list.length?avg(list.map(x=>x.process)).toFixed(1):'—'}<span class="session-meta"> / 10</span></strong></div></div></section>
   <div class="section-title list-heading">Recent Sessions</div><section class="card session-list">${list.length?list.map(sessionRow).join(''):'<div class="empty">No sessions yet. Log one after you play.</div>'}</section>
   ${sessionDeleteModal()}`,'sessions');
 }
-function sessionRow(s){ const when=s.startAt?new Date(s.startAt).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):s.date; return `<div class="session-row"><div><h3>${esc(s.game)}</h3><div class="session-meta">${esc(when)}${s.room?` · ${esc(s.room)}`:''} · ${esc(s.state)}${s.durationMs?` · ${formatDuration(s.durationMs)}`:''}</div><div class="score">Process ${s.process}/10 · Tilt ${s.tilt}/10</div></div><div class="session-side"><div class="session-pnl ${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</div><div class="score note-snippet">${esc(s.note||'')}</div></div><div class="session-actions"><button class="session-action" data-edit-session="${esc(s.id)}" aria-label="Edit session">Edit</button><button class="session-action" data-open-session-hands="${esc(s.id)}">Hands ${allSessionHands(s).length}</button><button class="session-action danger-text" data-delete-session="${esc(s.id)}" aria-label="Delete session">Delete</button></div></div>`; }
+function sessionRow(s){ const when=s.startAt?new Date(s.startAt).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):s.date; return `<div class="session-row" data-open-session="${esc(s.id)}" role="button" tabindex="0"><div><h3>${esc(s.game)}</h3><div class="session-meta">${esc(when)}${s.room?` · ${esc(s.room)}`:''} · ${esc(s.state)}${s.durationMs?` · ${formatDuration(s.durationMs)}`:''}</div><div class="score">Process ${s.process}/10 · Tilt ${s.tilt}/10</div></div><div class="session-side"><div class="session-pnl ${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</div><div class="score note-snippet">${esc(s.note||'')}</div></div><div class="session-actions"><button class="session-action" data-edit-session="${esc(s.id)}" aria-label="Edit session">Edit</button><button class="session-action" data-open-session-hands="${esc(s.id)}">Hands ${allSessionHands(s).length}</button><button class="session-action danger-text" data-delete-session="${esc(s.id)}" aria-label="Delete session">Delete</button></div></div>`; }
+function sessionDetail(){
+  const s=state.sessions.find(x=>x.id===editingSessionId); if(!s){route='sessions';return sessions();}
+  const hands=allSessionHands(s).filter(h=>!h.autoCandidate);
+  return appShell(`${header('Session <span class="accent">Details</span>',`${esc(s.date)} · ${esc(s.game)}`)}
+    <section class="card pad session-detail-top"><div class="row between"><div><small class="eyebrow">RESULT</small><strong class="session-detail-pnl ${s.pnl>=0?'positive':'negative'}">${money(s.pnl)}</strong></div><div><small class="eyebrow">PROCESS</small><strong>${s.process}/10</strong></div></div><div class="session-meta top-gap">${esc([s.room,s.state,s.durationMs?formatDuration(s.durationMs):null].filter(Boolean).join(' · '))}</div></section>
+    <section class="card pad"><div class="row between"><div><div class="section-title">Hands</div><div class="session-meta">${hands.length} captured during this session</div></div>${hands.length?`<button class="session-action" data-open-session-hands="${esc(s.id)}">View all</button>`:''}</div><div class="session-hand-preview">${hands.slice(-3).reverse().map(h=>handCard(h)).join('')||'<div class="empty">No hands captured in this session.</div>'}</div></section>
+    <button class="btn secondary" data-edit-session="${esc(s.id)}">Edit Session</button>`,'sessions');
+}
 function editSession(){
   const s=state.sessions.find(x=>x.id===editingSessionId);
   if(!s){editingSessionId=null; route='sessions'; return sessions();}
@@ -804,7 +841,7 @@ function recommendation(ss){ if(ss.length<3)return 'Keep the routine consistent 
 
 function profile(){ return appShell(`${header('More','Your game, your data, your progress.',false)}<div class="stack">${gamificationPanel()}<section class="card pad"><div class="section-title">Local-first data</div><p class="body-copy">No account and no server are required. Sessions, preparation settings, and insights are stored locally on this phone.</p></section><button class="btn secondary" id="exportData">Export my data</button><button class="btn secondary" id="seedDemo">Add demo sessions</button><button class="btn secondary danger-text" id="clearData">Clear all local data</button></div>`,'profile'); }
 
-function render(){ const app=document.getElementById('app'); app.innerHTML = ({home,prep:prepOverview,breathe,goals,handsIntro,handPlay,handExplain,handsComplete,review,active:activeSession,log:logSession,sessions,editSession,insights,captureReview,sessionHands,handDetail,profile}[route]||home)(); bind(); hydrateHandImages(); if(route==='active')startSessionTicker(); }
+function render(){ const app=document.getElementById('app'); app.innerHTML = ({home,prep:prepOverview,breathe,goals,handsIntro,handPlay,handExplain,handsComplete,review,active:activeSession,log:logSession,sessions,sessionDetail,editSession,insights,captureReview,sessionHands,handsLibrary,handDetail,profile}[route]||home)(); bind(); hydrateHandImages(); if(route==='active')startSessionTicker(); }
 function bind(){
   document.querySelectorAll('[data-nav]').forEach(el=>el.onclick=()=>navigate(el.dataset.nav));
   document.querySelectorAll('[data-back]').forEach(el=>el.onclick=()=>navigate(route==='handDetail'?'sessionHands':route==='sessionHands'?(selectedSessionHandsId==='active'?'active':'sessions'):route==='captureReview'?(selectedHandId?'handDetail':'active'):route==='editSession'?'sessions':route==='log'||route==='active'?'home':route==='breathe'?'prep':route==='goals'?'breathe':route==='handsIntro'?'goals':route==='handPlay'?'handsIntro':route==='handExplain'?'handPlay':route==='handsComplete'?'handsIntro':route==='review'?'handsIntro':'home'));
@@ -867,7 +904,10 @@ function bind(){
   document.querySelectorAll('[data-money-point]').forEach(el=>{ el.onpointerenter=()=>showMoneyPoint(el.dataset.moneyPoint); el.onclick=()=>showMoneyPoint(el.dataset.moneyPoint); });
   const captureBtn=document.querySelector('[data-capture-hand]'); if(captureBtn)captureBtn.onclick=triggerNativeCapture;
   const openActiveHands=document.querySelector('[data-open-active-hands]'); if(openActiveHands)openActiveHands.onclick=()=>{selectedSessionHandsId='active';navigate('sessionHands');};
-  document.querySelectorAll('[data-open-session-hands]').forEach(el=>el.onclick=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');});
+  document.querySelectorAll('[data-open-session]').forEach(el=>{const open=()=>{editingSessionId=el.dataset.openSession;navigate('sessionDetail');};el.onclick=e=>{if(e.target.closest('button'))return;open();};el.onkeydown=e=>{if(e.key==='Enter'){open();}};});
+  document.querySelectorAll('[data-hands-filter]').forEach(el=>el.onclick=()=>{handsFilter=el.dataset.handsFilter;render();});
+  const dropZone=document.getElementById('handDropZone'); if(dropZone){dropZone.ondragover=e=>{e.preventDefault();dropZone.classList.add('dragging');};dropZone.ondragleave=()=>dropZone.classList.remove('dragging');dropZone.ondrop=e=>{e.preventDefault();dropZone.classList.remove('dragging');const file=[...(e.dataTransfer?.files||[])].find(f=>f.type.startsWith('image/'));if(!file)return;const reader=new FileReader();reader.onload=()=>window.innerGameReceiveScreenshot(reader.result,'desktop_drop');reader.readAsDataURL(file);};}
+    document.querySelectorAll('[data-open-session-hands]').forEach(el=>el.onclick=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');});
   document.querySelectorAll('[data-open-hand]').forEach(el=>{const open=()=>{selectedHandId=el.dataset.openHand;navigate('handDetail');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-edit-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.editHand);if(pendingCapturedHand)navigate('captureReview');});
   document.querySelectorAll('[data-delete-hand]').forEach(el=>el.onclick=()=>{removeCapturedHand(el.dataset.deleteHand);selectedHandId=null;navigate('sessionHands');});
@@ -882,4 +922,5 @@ function bind(){
 function seedDemo(){ if(state.sessions.length)return; const rows=[[500,820,8,2,2,8,'Calm'],[500,340,5,7,8,4,'Tilted'],[500,620,7,3,4,7,'Focused'],[500,450,6,5,6,6,'Tense'],[500,760,9,2,2,9,'Calm'],[500,540,8,3,3,8,'Focused']]; rows.forEach((r,i)=>state.sessions.push({id:String(Date.now()+i),date:localDateValue(Date.now()-(rows.length-i)*86400000),startAt:Date.now()-(rows.length-i)*86400000-5400000,endAt:Date.now()-(rows.length-i)*86400000,room:i%2?'GG Poker':'Live Casino',game:'NL100',started:r[0],finished:r[1],pnl:r[1]-r[0],process:r[2],judgment:r[3],tilt:r[4],trust:r[5],state:r[6],note:'Demo session',durationMs:5400000})); }
 
 save();
+syncAutoScreenshotWatcher();
 render();
