@@ -9,6 +9,7 @@ import android.app.PendingIntent;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
+import android.content.ContentUris;
 import android.database.ContentObserver;
 import android.database.Cursor;
 import android.content.Intent;
@@ -42,7 +43,7 @@ public final class MainActivity extends Activity {
     private static final int NOTIFICATION_PERMISSION_REQUEST = 42;
     private static final int MEDIA_PERMISSION_REQUEST = 43;
     private static final int MAX_BREAK_REMINDERS = 24;
-    private static final String HAND_CHANNEL_ID = "hand_capture";
+    private static final String HAND_CHANNEL_ID = "hand_capture_fast_v2";
     private WebView webView;
     private String pendingScreenshotDataUrl;
     private String pendingHandId;
@@ -52,6 +53,7 @@ public final class MainActivity extends Activity {
     private boolean notificationPermissionPromptedThisLaunch = false;
     private ContentObserver screenshotObserver;
     private String lastScreenshotUri = "";
+    private long lastScreenshotMediaId = -1L;
     private long lastScreenshotHandledAt = 0L;
 
     @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
@@ -304,46 +306,162 @@ public final class MainActivity extends Activity {
                 || hay.contains("screenshots") || hay.contains("screencapture");
     }
 
-    private void inspectScreenshotUri(Uri uri) {
-        final String uriText = uri.toString();
-        long now = System.currentTimeMillis();
-        if (uriText.equals(lastScreenshotUri) && now - lastScreenshotHandledAt < 5000L) return;
-
+    private Uri resolveRecentScreenshotUri(Uri changedUri) {
         String[] projection = Build.VERSION.SDK_INT >= 29
-                ? new String[]{MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.RELATIVE_PATH, MediaStore.Images.Media.DATE_ADDED}
-                : new String[]{MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED};
+                ? new String[]{
+                        MediaStore.Images.Media._ID,
+                        MediaStore.Images.Media.DISPLAY_NAME,
+                        MediaStore.Images.Media.RELATIVE_PATH,
+                        MediaStore.Images.Media.DATE_ADDED
+                }
+                : new String[]{
+                        MediaStore.Images.Media._ID,
+                        MediaStore.Images.Media.DISPLAY_NAME,
+                        MediaStore.Images.Media.DATE_ADDED
+                };
+
+        try (Cursor cursor = getContentResolver().query(
+                changedUri,
+                projection,
+                null,
+                null,
+                MediaStore.Images.Media.DATE_ADDED + " DESC"
+        )) {
+            if (cursor == null) return null;
+            int scanned = 0;
+            while (cursor.moveToNext() && scanned++ < 6) {
+                long id = cursor.getLong(0);
+                String name = cursor.getString(1);
+                String relativePath = Build.VERSION.SDK_INT >= 29 ? cursor.getString(2) : "";
+                long dateAddedSeconds = cursor.getLong(Build.VERSION.SDK_INT >= 29 ? 3 : 2);
+                if (!looksLikeScreenshot(name, relativePath)) continue;
+                if (dateAddedSeconds > 0 && Math.abs((System.currentTimeMillis() / 1000L) - dateAddedSeconds) > 30L) continue;
+                return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+            }
+        } catch (Exception ignored) {}
+
+        // Some devices notify the collection URI rather than the new item URI.
+        // Fall back to the newest recent image and apply the same screenshot checks.
+        try (Cursor cursor = getContentResolver().query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                projection,
+                MediaStore.Images.Media.DATE_ADDED + ">=?",
+                new String[]{String.valueOf((System.currentTimeMillis() / 1000L) - 30L)},
+                MediaStore.Images.Media.DATE_ADDED + " DESC"
+        )) {
+            if (cursor == null) return null;
+            int scanned = 0;
+            while (cursor.moveToNext() && scanned++ < 8) {
+                long id = cursor.getLong(0);
+                String name = cursor.getString(1);
+                String relativePath = Build.VERSION.SDK_INT >= 29 ? cursor.getString(2) : "";
+                if (looksLikeScreenshot(name, relativePath)) {
+                    return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private long mediaId(Uri uri) {
+        try { return ContentUris.parseId(uri); } catch (Exception ignored) { return -1L; }
+    }
+
+    private boolean mediaItemReady(Uri uri) {
+        if (Build.VERSION.SDK_INT < 29) return true;
+        String[] projection = new String[]{MediaStore.Images.Media.IS_PENDING, MediaStore.Images.Media.SIZE};
         try (Cursor cursor = getContentResolver().query(uri, projection, null, null, null)) {
-            if (cursor == null || !cursor.moveToFirst()) return;
-            String name = cursor.getString(0);
-            String relativePath = Build.VERSION.SDK_INT >= 29 ? cursor.getString(1) : "";
-            long dateAddedSeconds = cursor.getLong(Build.VERSION.SDK_INT >= 29 ? 2 : 1);
-            if (!looksLikeScreenshot(name, relativePath)) return;
-            if (dateAddedSeconds > 0 && Math.abs((System.currentTimeMillis() / 1000L) - dateAddedSeconds) > 30L) return;
+            if (cursor == null || !cursor.moveToFirst()) return false;
+            int pending = cursor.getInt(0);
+            long size = cursor.getLong(1);
+            return pending == 0 && size > 4096L;
         } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void notifyAutoCaptureDetected() {
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("stage", "analyzing");
+            payload.put("title", "Poker hand detected");
+            payload.put("body", "Screenshot captured. Analyzing the hand…");
+            payload.put("handId", "");
+            showHandNotification(payload.toString());
+        } catch (Exception ignored) {}
+    }
+
+    private void notifyAutoCaptureReadFailed() {
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("stage", "failed");
+            payload.put("title", "Screenshot capture failed");
+            payload.put("body", "Inner Game detected the screenshot but could not read it. Try another screenshot or Share → Inner Game.");
+            payload.put("handId", "");
+            showHandNotification(payload.toString());
+        } catch (Exception ignored) {}
+    }
+
+    private void inspectScreenshotUri(Uri changedUri) {
+        final Uri screenshotUri = resolveRecentScreenshotUri(changedUri);
+        if (screenshotUri == null) return;
+
+        final long id = mediaId(screenshotUri);
+        final String uriText = screenshotUri.toString();
+        final long now = System.currentTimeMillis();
+        if ((id >= 0 && id == lastScreenshotMediaId && now - lastScreenshotHandledAt < 15_000L)
+                || (uriText.equals(lastScreenshotUri) && now - lastScreenshotHandledAt < 15_000L)) {
             return;
         }
 
+        // Mark and notify before any image decoding/compression/network work.
+        lastScreenshotMediaId = id;
         lastScreenshotUri = uriText;
         lastScreenshotHandledAt = now;
+        notifyAutoCaptureDetected();
+
         new Thread(() -> {
             try {
-                String dataUrl = readImageDataUrl(uri);
-                if (dataUrl != null) dispatchScreenshotData(dataUrl, "android_auto", null);
-            } catch (Exception ignored) {}
+                String dataUrl = readImageDataUrlWhenReady(screenshotUri);
+                if (dataUrl != null) {
+                    dispatchScreenshotData(dataUrl, "android_auto", null);
+                } else {
+                    notifyAutoCaptureReadFailed();
+                }
+            } catch (Exception ignored) {
+                notifyAutoCaptureReadFailed();
+            }
         }, "innergame-screenshot-import").start();
+    }
+
+    private String readImageDataUrlWhenReady(Uri uri) throws Exception {
+        // MediaStore can fire before the screenshot file is fully committed.
+        // Wait only as long as needed; notification has already been sent.
+        for (int attempt = 0; attempt < 6; attempt++) {
+            if (attempt > 0) Thread.sleep(70L * attempt);
+            if (!mediaItemReady(uri)) continue;
+            String dataUrl = readImageDataUrl(uri);
+            if (dataUrl != null && dataUrl.length() > 6000) return dataUrl;
+        }
+        if (Build.VERSION.SDK_INT < 29 || mediaItemReady(uri)) {
+            return readImageDataUrl(uri);
+        }
+        return null;
     }
 
     private String readImageDataUrl(Uri uri) throws Exception {
         try (InputStream input = getContentResolver().openInputStream(uri);
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             if (input == null) return null;
-            byte[] buffer = new byte[8192];
-            int read, total = 0;
+            byte[] buffer = new byte[16_384];
+            int read;
+            int total = 0;
             while ((read = input.read(buffer)) != -1) {
                 total += read;
                 if (total > 14_000_000) return null;
                 output.write(buffer, 0, read);
             }
+            if (total < 4096) return null;
             String mime = getContentResolver().getType(uri);
             if (mime == null || !mime.startsWith("image/")) mime = "image/png";
             return "data:" + mime + ";base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
@@ -399,7 +517,7 @@ public final class MainActivity extends Activity {
         NotificationChannel channel = new NotificationChannel(
                 HAND_CHANNEL_ID,
                 "Poker hand capture",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
         );
         channel.setDescription("Updates when Inner Game captures and analyzes poker screenshots.");
         channel.enableVibration(true);
@@ -444,6 +562,10 @@ public final class MainActivity extends Activity {
                     ? new Notification.Builder(this, HAND_CHANNEL_ID)
                     : new Notification.Builder(this);
 
+            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager == null) return;
+            if (!"analyzing".equals(stage)) manager.cancel(6100);
+
             Notification notification = builder
                     .setSmallIcon(android.R.drawable.ic_menu_camera)
                     .setContentTitle(title)
@@ -458,8 +580,7 @@ public final class MainActivity extends Activity {
                     .build();
 
             int id = 6100 + Math.abs(handId.hashCode() % 500);
-            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (manager != null) manager.notify(id, notification);
+            manager.notify(id, notification);
         } catch (Exception ignored) {}
     }
 
