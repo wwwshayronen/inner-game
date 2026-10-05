@@ -362,7 +362,7 @@ app.get("/solver/status", (_req,res)=>res.json({
   configured:Boolean(POKERAI_KEY),
   providers:[
     {id:"pokerai",configured:Boolean(POKERAI_KEY),formats:["6max NLH"],stackDepth:"custom postflop; 40bb/100bb standard preflop range seeds"},
-    {id:"deepsolver",configured:Boolean(process.env.DEEPSOLVER_API_TOKEN),formats:["NLH postflop"],stackDepth:"custom"}
+    {id:"deepsolver",configured:Boolean(process.env.DEEPSOLVER_API_TOKEN),implemented:false,formats:["NLH postflop"],stackDepth:"custom"}
   ]
 }));
 
@@ -516,6 +516,7 @@ app.post("/solver/solve", async (req,res)=>{
       `Exact postflop stack: ${spot.flopStartEffectiveStackBb} BB entering flop`,
       `Hero preflop range seeded from ${heroRangeInfo.version}`,
       `Villain preflop range seeded from ${villainRangeInfo.version}`,
+      ...(spot.format==="tournament"?["Tournament postflop is solved in chip EV; preflop seed uses the nearest available 6-max 40bb/100bb chart, not ICM."]:[]),
       "Observed bet sizes included in the custom tree",
       "Post-hand study only"
     ];
