@@ -5,22 +5,45 @@ dependencies {
     implementation 'androidx.webkit:webkit:1.14.0'
 }
 
+def ciRunNumber = (System.getenv('GITHUB_RUN_NUMBER') ?: '0').toInteger()
+def updateVersionCode = ciRunNumber > 0 ? 100000 + ciRunNumber : 17
+def updateVersionName = ciRunNumber > 0 ? "1.10.${ciRunNumber}" : '1.10.0'
+def updateKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH')
+
 android {
     namespace 'com.innergame.app'
     compileSdk 36
 
     defaultConfig {
+        // Keep this package ID stable forever so Android treats future APKs as updates.
         applicationId 'com.innergame.app.v16'
         minSdk 26
         targetSdk 36
-        versionCode 17
-        versionName '1.10.0'
+        versionCode updateVersionCode
+        versionName updateVersionName
+    }
+
+    signingConfigs {
+        if (updateKeystorePath) {
+            innerGameUpdate {
+                storeFile file(updateKeystorePath)
+                storePassword 'innergame-ci-update'
+                keyAlias 'innergame-update'
+                keyPassword 'innergame-ci-update'
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            // CI builds use one persistent signing key, so a new APK can be
+            // installed directly over the previous build without uninstalling.
+            if (updateKeystorePath) signingConfig signingConfigs.innerGameUpdate
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (updateKeystorePath) signingConfig signingConfigs.innerGameUpdate
         }
     }
 }
