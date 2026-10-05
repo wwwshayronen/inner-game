@@ -58,6 +58,19 @@ public final class MainActivity extends Activity {
     private static final String HAND_CHANNEL_ID = "hand_capture_fast_v2";
     private static final String HAND_ANALYSIS_URL = "https://inner-game-production.up.railway.app/analyze-hand";
     private static final String PENDING_HAND_PREFIX = "pending_hand_";
+    private static final String DIAGNOSTIC_LOG_FILE = "screenshot_diagnostics.log";
+
+    private static final class CaptureStageException extends Exception {
+        final String stage;
+        CaptureStageException(String stage, Throwable cause) {
+            super(cause == null ? stage : cause.getMessage(), cause);
+            this.stage = stage;
+        }
+        CaptureStageException(String stage, String message) {
+            super(message);
+            this.stage = stage;
+        }
+    }
     private WebView webView;
     private String pendingScreenshotDataUrl;
     private String pendingHandId;
@@ -439,32 +452,51 @@ public final class MainActivity extends Activity {
 
         new Thread(() -> {
             String dataUrl = null;
+            String stage = "IMAGE_READ";
             try {
+                logCaptureDiagnostic(captureId, "DETECTED", "uri=" + screenshotUri);
+
+                stage = "IMAGE_READ";
                 dataUrl = readCompactImageDataUrlWhenReady(screenshotUri);
                 if (dataUrl == null) {
-                    notifyAutoCaptureReadFailed();
-                    return;
+                    throw new CaptureStageException(stage, "No readable image data");
                 }
+                logCaptureDiagnostic(captureId, "IMAGE_READY", "chars=" + dataUrl.length());
 
-                JSONObject parsed = analyzeHandNative(dataUrl);
+                stage = "HTTP_ANALYSIS";
+                JSONObject parsed = analyzeHandNative(dataUrl, captureId);
+                logCaptureDiagnostic(captureId, "HTTP_OK", "isPokerHand=" + parsed.optBoolean("isPokerHand", false));
+
                 if (!parsed.optBoolean("isPokerHand", false)) {
                     cancelAutoCaptureNotification();
                     return;
                 }
 
+                stage = "PERSIST_RESULT";
                 persistPendingNativeHand(captureId, dataUrl, parsed.toString());
+                logCaptureDiagnostic(captureId, "PERSIST_OK", "pending result written");
+
+                stage = "DISPATCH_RESULT";
                 dispatchPendingNativeAnalyses();
                 notifyAutoCaptureSaved(captureId, parsed.optString("title", "Poker hand"));
+                logCaptureDiagnostic(captureId, "DONE", "saved notification sent");
             } catch (Exception error) {
+                String failedStage = error instanceof CaptureStageException
+                        ? ((CaptureStageException) error).stage
+                        : stage;
+                String details = diagnosticErrorText(error);
+                logCaptureDiagnostic(captureId, failedStage, details);
                 try {
                     if (dataUrl != null) {
                         JSONObject failed = new JSONObject();
-                        failed.put("__error", String.valueOf(error.getMessage() == null ? "Analysis request failed" : error.getMessage()));
+                        failed.put("__error", failedStage + ": " + details);
                         persistPendingNativeHand(captureId, dataUrl, failed.toString());
                         dispatchPendingNativeAnalyses();
                     }
-                } catch (Exception ignored) {}
-                notifyAutoCaptureAnalysisFailed(captureId);
+                } catch (Exception persistError) {
+                    logCaptureDiagnostic(captureId, "PERSIST_FAILURE_RESULT", diagnosticErrorText(persistError));
+                }
+                notifyAutoCaptureAnalysisFailed(captureId, failedStage, details);
             }
         }, "innergame-native-hand-analysis").start();
     }
@@ -511,16 +543,26 @@ public final class MainActivity extends Activity {
         return "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
     }
 
-    private JSONObject analyzeHandNative(String dataUrl) throws Exception {
-        JSONObject body = new JSONObject();
-        body.put("imageDataUrl", dataUrl);
-        body.put("context", new JSONObject());
-        byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
+    private JSONObject analyzeHandNative(String dataUrl, String captureId) throws Exception {
+        JSONObject body;
+        try {
+            body = new JSONObject();
+            body.put("imageDataUrl", dataUrl);
+            body.put("context", new JSONObject());
+        } catch (Exception error) {
+            throw new CaptureStageException("REQUEST_JSON", error);
+        }
 
+        byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
         Exception lastError = null;
+        String lastStage = "HTTP_CONNECT";
+
         for (int attempt = 0; attempt < 2; attempt++) {
             HttpURLConnection connection = null;
             try {
+                logCaptureDiagnostic(captureId, "HTTP_ATTEMPT", "attempt=" + (attempt + 1) + ", bytes=" + payload.length);
+
+                lastStage = "HTTP_CONNECT";
                 connection = (HttpURLConnection) new URL(HAND_ANALYSIS_URL).openConnection();
                 connection.setRequestMethod("POST");
                 connection.setConnectTimeout(8_000);
@@ -530,25 +572,51 @@ public final class MainActivity extends Activity {
                 connection.setRequestProperty("Accept", "application/json");
                 connection.setFixedLengthStreamingMode(payload.length);
 
+                lastStage = "HTTP_WRITE";
                 try (OutputStream output = connection.getOutputStream()) {
                     output.write(payload);
+                    output.flush();
                 }
 
+                lastStage = "HTTP_RESPONSE";
                 int status = connection.getResponseCode();
+                logCaptureDiagnostic(captureId, "HTTP_STATUS", String.valueOf(status));
+
                 InputStream responseStream = status >= 200 && status < 300
                         ? connection.getInputStream()
                         : connection.getErrorStream();
+
+                lastStage = "HTTP_READ";
                 String responseBody = readUtf8(responseStream);
-                if (status >= 200 && status < 300) return new JSONObject(responseBody);
-                lastError = new IllegalStateException("Analysis HTTP " + status);
-            } catch (Exception error) {
+
+                if (status >= 200 && status < 300) {
+                    lastStage = "JSON_PARSE";
+                    try {
+                        return new JSONObject(responseBody);
+                    } catch (Exception error) {
+                        throw new CaptureStageException(lastStage, error);
+                    }
+                }
+
+                lastError = new CaptureStageException(
+                        "HTTP_RESPONSE",
+                        "HTTP " + status + (responseBody == null || responseBody.isEmpty() ? "" : " · " + truncateDiagnostic(responseBody))
+                );
+            } catch (CaptureStageException error) {
                 lastError = error;
+                lastStage = error.stage;
+            } catch (Exception error) {
+                lastError = new CaptureStageException(lastStage, error);
             } finally {
                 if (connection != null) connection.disconnect();
             }
+
+            logCaptureDiagnostic(captureId, lastStage, diagnosticErrorText(lastError));
             if (attempt == 0) Thread.sleep(180L);
         }
-        throw lastError == null ? new IllegalStateException("Analysis request failed") : lastError;
+
+        if (lastError instanceof CaptureStageException) throw lastError;
+        throw new CaptureStageException(lastStage, lastError == null ? new IllegalStateException("Analysis request failed") : lastError);
     }
 
     private String readUtf8(InputStream input) throws Exception {
@@ -627,12 +695,39 @@ public final class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
-    private void notifyAutoCaptureAnalysisFailed(String captureId) {
+    private String truncateDiagnostic(String value) {
+        if (value == null) return "";
+        String clean = value.replace('\n', ' ').replace('\r', ' ').trim();
+        return clean.length() > 180 ? clean.substring(0, 180) + "…" : clean;
+    }
+
+    private String diagnosticErrorText(Throwable error) {
+        if (error == null) return "Unknown error";
+        Throwable root = error;
+        while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+        String name = root.getClass().getSimpleName();
+        String message = root.getMessage();
+        return truncateDiagnostic(name + (message == null || message.isEmpty() ? "" : ": " + message));
+    }
+
+    private void logCaptureDiagnostic(String captureId, String stage, String detail) {
+        try {
+            String line = System.currentTimeMillis() + " | " + captureId + " | " + stage + " | " +
+                    truncateDiagnostic(detail) + "\n";
+            try (FileOutputStream output = new FileOutputStream(
+                    new File(getFilesDir(), DIAGNOSTIC_LOG_FILE), true)) {
+                output.write(line.getBytes(StandardCharsets.UTF_8));
+            }
+            android.util.Log.e("InnerGameCapture", stage + " | " + truncateDiagnostic(detail));
+        } catch (Exception ignored) {}
+    }
+
+    private void notifyAutoCaptureAnalysisFailed(String captureId, String stage, String details) {
         try {
             JSONObject payload = new JSONObject();
             payload.put("stage", "failed");
-            payload.put("title", "Hand analysis failed");
-            payload.put("body", "The screenshot is saved in Inner Game. Tap to retry analysis.");
+            payload.put("title", "Hand analysis failed · " + stage);
+            payload.put("body", truncateDiagnostic(details));
             payload.put("handId", captureId);
             showHandNotification(payload.toString());
         } catch (Exception ignored) {}
