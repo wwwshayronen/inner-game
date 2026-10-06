@@ -597,3 +597,12 @@ input:focus,textarea:focus,select:focus{border-color:rgba(53,217,138,.65)!import
   .session-stat span{display:none}
   .session-hand-count{font-size:9px}
 }
+
+
+/* Solver debug build */
+.solver-debug-card{margin-top:12px;border-color:rgba(255,184,77,.26);background:rgba(255,184,77,.035)}
+.solver-debug-card .section-title{margin:2px 0 0}
+.solver-debug-card .btn.tiny{min-height:34px;padding:7px 10px;font-size:10px}
+.solver-debug-summary{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 10px}
+.solver-debug-summary span{font-size:9px;padding:5px 7px;border-radius:999px;border:1px solid var(--line);background:#0b0f11;color:var(--muted)}
+.solver-debug-card pre{margin:0;max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:12px;border-radius:12px;background:#080a0b;border:1px solid var(--line);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:9px;line-height:1.45;color:#b8c1bd;-webkit-user-select:text;user-select:text}
