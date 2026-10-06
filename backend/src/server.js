@@ -10,6 +10,7 @@ app.use(express.json({ limit: "18mb" }));
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const SOLVER_INSPECT_MODEL = process.env.SOLVER_INSPECT_MODEL || "gpt-5.6-sol";
+const SOLVER_INSPECT_REASONING = process.env.SOLVER_INSPECT_REASONING || "medium";
 const POKERAI_BASE = process.env.POKERAI_API_BASE || "https://pokerai.bet";
 const POKERAI_KEY = process.env.POKERAI_API_KEY || "";
 
@@ -99,6 +100,32 @@ const solverSpotSchema = z.object({
   actionHistory:z.array(solverActionSchema),
   missingFields:z.array(z.string()),
   extractionNotes:z.array(z.string())
+});
+
+const solverActionInputSchema = solverActionSchema.extend({
+  amountBb:z.coerce.number(),
+  sizePctPot:z.coerce.number()
+});
+const solverSpotInputSchema = solverSpotSchema.extend({
+  confidence:z.coerce.number(),
+  tableSize:z.coerce.number().int(),
+  effectiveStackBb:z.coerce.number(),
+  potAtDecisionBb:z.coerce.number(),
+  heroStackBb:z.coerce.number(),
+  villainStackBb:z.coerce.number(),
+  flopStartPotBb:z.coerce.number(),
+  flopStartEffectiveStackBb:z.coerce.number(),
+  observedHeroAmountBb:z.coerce.number(),
+  heroDisplayedStackBb:z.coerce.number(),
+  villainDisplayedStackBb:z.coerce.number(),
+  finalPotBb:z.coerce.number(),
+  streetStartPotsBb:z.object({
+    preflop:z.coerce.number(),
+    flop:z.coerce.number(),
+    turn:z.coerce.number(),
+    river:z.coerce.number()
+  }),
+  actionHistory:z.array(solverActionInputSchema)
 });
 
 const solverInspectJsonSchema = {
@@ -249,20 +276,44 @@ function actionKey(action){
   if(a==="fold") return "fold";
   return a;
 }
-function pokeraiPreflopAction(a){
-  const actionMap={
-    small_blind:"small blind",
-    big_blind:"big blind",
-    fold:"fold",
-    call:"call",
-    raise:"raise",
-    allin:"raise"
-  };
-  const mapped=actionMap[a.action];
-  if(!mapped) return null;
-  const out={position:normalizePosition(a.position),action:mapped};
-  if(a.action!=="fold") out.amount=Math.max(0,Number(a.amountBb)||0);
-  if(a.action==="allin") out.allin=true;
+function pokeraiPreflopActions(actions=[]){
+  const invested={};
+  const out=[];
+  for(const source of actions||[]){
+    const position=normalizePosition(source.position);
+    const rawAction=String(source.action||"").toLowerCase();
+    const normalizedAction=(rawAction==="bet"||rawAction==="donk_bet")?"raise":rawAction;
+    const actionMap={
+      small_blind:"small blind",
+      big_blind:"big blind",
+      fold:"fold",
+      call:"call",
+      raise:"raise",
+      allin:"raise"
+    };
+    const mapped=actionMap[normalizedAction];
+    if(!mapped||!position)continue;
+    const row={position,action:mapped};
+    if(mapped!=="fold"){
+      const before=Number(invested[position]||0);
+      const highest=Math.max(0,...Object.values(invested).map(Number));
+      const rawAmount=Math.max(0,Number(source.amountBb)||0);
+      let added=0;
+      if(normalizedAction==="call"){
+        // Internal hand history stores calls as the additional chips called.
+        // A zero amount is reconstructed from the outstanding wager.
+        added=rawAmount>0?rawAmount:Math.max(0,highest-before);
+      }else{
+        // Internal raises are stored as raise-to totals. PokerAI expects the
+        // incremental amount newly invested by this action.
+        added=Math.max(0,rawAmount-before);
+      }
+      row.amount=roundBb(added);
+      invested[position]=roundBb(before+added);
+    }
+    if(normalizedAction==="allin")row.allin=true;
+    out.push(row);
+  }
   return out;
 }
 function rangeStringFromGrid(range, chosenAction){
@@ -277,10 +328,10 @@ async function derivePlayerPreflopRange(spot, position){
   const pre=(spot.actionHistory||[]).filter(a=>a.street==="preflop");
   let lastIndex=-1;
   for(let i=0;i<pre.length;i++) if(normalizePosition(pre[i].position)===normalizePosition(position) && !["small_blind","big_blind"].includes(pre[i].action)) lastIndex=i;
-  if(lastIndex<0) throw Object.assign(new Error(`Missing final preflop action for ${position}`),{code:"missing_preflop_range_action"});
+  if(lastIndex<0) throw Object.assign(new Error(`Missing final preflop action for ${position}`),{code:"missing_preflop_range_action",status:422});
   const chosen=pre[lastIndex];
-  if(!["fold","call","raise","allin"].includes(chosen.action)) throw Object.assign(new Error(`Unsupported preflop action for ${position}`),{code:"unsupported_preflop_range_action"});
-  const prior=pre.slice(0,lastIndex).map(pokeraiPreflopAction).filter(Boolean);
+  if(!["fold","call","raise","allin"].includes(chosen.action)) throw Object.assign(new Error(`Unsupported preflop action for ${position}`),{code:"unsupported_preflop_range_action",status:422});
+  const prior=pokeraiPreflopActions(pre.slice(0,lastIndex));
   const body={
     table_size:"6max",
     positions:{hero:normalizePosition(position)},
@@ -610,14 +661,28 @@ async function extractSolverSpot(imageDataUrl,hand={},repairContext=null){
   ].filter(Boolean).join("\n");
   const response=await client.responses.create({
     model:SOLVER_INSPECT_MODEL,
-    reasoning:{effort:"high"},
+    reasoning:{effort:SOLVER_INSPECT_REASONING},
     input:[{role:"user",content:[
       {type:"input_text",text:prompt},
-      {type:"input_image",image_url:imageDataUrl,detail:"original"}
+      {type:"input_image",image_url:imageDataUrl,detail:"high"}
     ]}],
     text:{format:{type:"json_schema",name:"solver_spot_inspection",strict:true,schema:solverInspectJsonSchema}}
   });
-  const raw=solverSpotSchema.parse(JSON.parse(response.output_text));
+  let decoded;
+  try{
+    if(!response.output_text||!String(response.output_text).trim())throw new Error("empty model output");
+    decoded=JSON.parse(response.output_text);
+  }catch(error){
+    throw Object.assign(new Error(`Solver extraction returned invalid JSON: ${String(error?.message||error)}`),{code:"solver_extract_invalid_json",status:502});
+  }
+  const parsed=solverSpotSchema.safeParse(decoded);
+  if(!parsed.success){
+    throw Object.assign(new Error("Solver extraction returned an invalid hand shape."),{
+      code:"solver_extract_invalid_shape",status:502,
+      validation:parsed.error.issues.map(issue=>({path:issue.path.join("."),message:issue.message}))
+    });
+  }
+  const raw=parsed.data;
   const rawSpot=JSON.parse(JSON.stringify(raw));
   const spot=normalizeSolverSpot(raw);
   const reconstructed=reconstructSolverMath(spot);
@@ -637,6 +702,23 @@ async function extractSolverSpot(imageDataUrl,hand={},repairContext=null){
     }
   };
 }
+function preflopRangeReadinessIssues(spot){
+  if(spot.decisionStreet==="preflop")return [];
+  const rows=(spot.actionHistory||[]).filter(a=>a.street==="preflop");
+  const issues=[];
+  for(const position of [spot.heroPosition,spot.villainPosition].map(normalizePosition).filter(Boolean)){
+    const actions=rows.filter(a=>normalizePosition(a.position)===position&&!["small_blind","big_blind"].includes(a.action));
+    const chosen=actions.at(-1);
+    if(!chosen){
+      issues.push(`Missing final preflop action for ${position}`);
+      continue;
+    }
+    if(!["call","raise","allin"].includes(chosen.action)){
+      issues.push(`Unsupported final preflop action for ${position}: ${chosen.action}`);
+    }
+  }
+  return issues;
+}
 function solverReadiness(spot){
   const missing=[];
   if(spot.game!=="NLH") missing.push("No-limit Hold’em");
@@ -648,6 +730,7 @@ function solverReadiness(spot){
   if(boardNeed && (spot.board||[]).length<boardNeed) missing.push("Board");
   if(!spot.actionHistoryComplete) missing.push("Complete action history from preflop to this decision");
   missing.push(...solverActionHistoryIssues(spot));
+  missing.push(...preflopRangeReadinessIssues(spot));
   if(spot.decisionStreet!=="preflop"){
     if(!spot.villainPosition) missing.push("Villain position");
     if(!(spot.flopStartPotBb>0)) missing.push("Pot entering flop");
@@ -655,11 +738,12 @@ function solverReadiness(spot){
   }
   return [...new Set([...(spot.missingFields||[]),...missing])];
 }
-function actionSegment(action){
+function actionSegment(action,facingBet=false){
   if(action.action==="check")return {type:"CHECK"};
   if(action.action==="call")return {type:"CALL"};
   if(action.action==="bet"||action.action==="donk_bet")return {type:"BET",amount:Number(action.amountBb)||0};
-  if(["raise","allin"].includes(action.action))return {type:"RAISE",amount:Number(action.amountBb)||0};
+  if(action.action==="raise")return {type:"RAISE",amount:Number(action.amountBb)||0};
+  if(action.action==="allin")return {type:facingBet?"RAISE":"BET",amount:Number(action.amountBb)||0};
   if(action.action==="fold")return {type:"FOLD"};
   return null;
 }
@@ -670,9 +754,12 @@ function expectedPostflopSegments(spot){
   const segments=[];
   const board=(spot.board||[]).map(normalizeCard);
   for(const street of ["flop","turn","river"]){
+    let facingBet=false;
     for(const action of (spot.actionHistory||[]).filter(a=>a.street===street)){
-      const segment=actionSegment(action);
+      const segment=actionSegment(action,facingBet);
       if(segment)segments.push(segment);
+      if(["bet","donk_bet","raise","allin"].includes(action.action))facingBet=true;
+      if(["call","fold"].includes(action.action))facingBet=false;
     }
     if(street==="flop" && board[3])segments.push({type:"CARD",card:board[3]});
     if(street==="turn" && board[4])segments.push({type:"CARD",card:board[4]});
@@ -710,8 +797,16 @@ function nodeMatchScore(node, expected){
 function observedSizingConfig(spot){
   const bet_sizes={},raise_sizes={},donk_sizes={};
   for(const street of ["flop","turn","river"]){
-    const bets=(spot.actionHistory||[]).filter(a=>a.street===street&&["bet","donk_bet"].includes(a.action)&&a.sizePctPot>0).map(a=>Math.round(a.sizePctPot));
-    const raises=(spot.actionHistory||[]).filter(a=>a.street===street&&["raise","allin"].includes(a.action)&&a.sizePctPot>0).map(a=>Math.round(a.sizePctPot));
+    const bets=[],raises=[];
+    let facingBet=false;
+    for(const action of (spot.actionHistory||[]).filter(a=>a.street===street)){
+      if(action.sizePctPot>0){
+        if(action.action==="bet"||action.action==="donk_bet"||(action.action==="allin"&&!facingBet))bets.push(Math.round(action.sizePctPot));
+        if(action.action==="raise"||(action.action==="allin"&&facingBet))raises.push(Math.round(action.sizePctPot));
+      }
+      if(["bet","donk_bet","raise","allin"].includes(action.action))facingBet=true;
+      if(["call","fold"].includes(action.action))facingBet=false;
+    }
     const baseBets=[33,67,100,...bets];
     bet_sizes[street]=[...new Set(baseBets)].filter(x=>x>=5&&x<=300).slice(0,6);
     // A lead from OOP on a later street after calling the previous street is a
@@ -828,26 +923,11 @@ app.post("/solver/inspect", async (req,res)=>{
   try{
     const {imageDataUrl,hand={}}=req.body||{};
     if(typeof imageDataUrl!=="string"||!imageDataUrl.startsWith("data:image/"))return res.status(400).json({error:"imageDataUrl is required",debug:{requestId,stage:"validate_input"}});
+    // Keep one model pass per HTTP request. The previous automatic second pass
+    // routinely pushed difficult screenshots beyond the mobile/proxy request
+    // window. The existing "Try again" action provides an explicit second read.
     const first=await extractSolverSpot(imageDataUrl,hand);
-    let spot=first.spot;
-    let chosenDebug=first.debug;
-    let issues=solverActionHistoryIssues(spot);
-    const heroLooksSuspicious=(hand?.heroCards||[]).length===2 && spot.heroCards.join(" ").toLowerCase()===((hand.heroCards||[]).join(" ").toLowerCase()) && issues.length>0;
-    const firstMissing=solverReadiness({...spot,missingFields:spot.missingFields||[]});
-    let repairDebug=null;
-    if(issues.length || firstMissing.length || heroLooksSuspicious){
-      try{
-        const repaired=await extractSolverSpot(imageDataUrl,hand,{issues,missing:firstMissing,previousSpot:spot});
-        repairDebug=repaired.debug;
-        const repairedMissing=solverReadiness({...repaired.spot,missingFields:repaired.spot.missingFields||[]});
-        if(repairedMissing.length<firstMissing.length || (repairedMissing.length===firstMissing.length && solverActionHistoryIssues(repaired.spot).length<=issues.length)){
-          spot=repaired.spot;
-          chosenDebug=repaired.debug;
-        }
-      }catch(error){
-        repairDebug={error:String(error?.message||error)};
-      }
-    }
+    const spot=first.spot;
     spot.missingFields=solverReadiness({...spot,missingFields:spot.missingFields||[]});
     const debug={
       requestId,
@@ -855,7 +935,8 @@ app.post("/solver/inspect", async (req,res)=>{
       model:SOLVER_INSPECT_MODEL,
       durationMs:Date.now()-startedAt,
       firstPass:first.debug,
-      repairPass:repairDebug,
+      repairPass:null,
+      repairStrategy:"manual_retry_only",
       chosen:{
         spot,
         historyIssues:solverActionHistoryIssues(spot),
@@ -866,7 +947,8 @@ app.post("/solver/inspect", async (req,res)=>{
     return res.json({spot,ready:spot.missingFields.length===0,debug});
   }catch(error){
     console.error(JSON.stringify({event:"solver_spot_inspect_failed",requestId,ms:Date.now()-startedAt,error:String(error?.message||error)}));
-    return res.status(500).json({error:"Could not prepare this hand for the solver",message:String(error?.message||error),debug:{requestId,stage:"inspect_exception",durationMs:Date.now()-startedAt,error:String(error?.stack||error)}});
+    const status=Number(error?.status)||500;
+    return res.status(status).json({error:error?.code||"solver_inspect_failed",message:String(error?.message||error),validation:error?.validation||null,debug:{requestId,stage:"inspect_exception",durationMs:Date.now()-startedAt,error:String(error?.stack||error)}});
   }
 });
 app.post("/solver/solve", async (req,res)=>{
@@ -876,14 +958,23 @@ app.post("/solver/solve", async (req,res)=>{
   try{
     if(!POKERAI_KEY)return res.status(503).json({error:"solver_not_configured",message:"Pokerai API key is not configured yet.",debug:{requestId,stage:"provider_config"}});
     stage="parse_spot";
-    const spot=expandShortHandedPreflopForSixMax(normalizeSolverSpot(solverSpotSchema.parse(req.body?.spot||{})));
+    const parsedSpot=solverSpotInputSchema.safeParse(req.body?.spot||{});
+    if(!parsedSpot.success){
+      return res.status(422).json({
+        error:"invalid_spot",
+        message:"The saved hand data is incomplete or has invalid field types. Re-read the screenshot before solving.",
+        validation:parsedSpot.error.issues.map(issue=>({path:issue.path.join("."),message:issue.message})),
+        debug:{requestId,stage:"parse_spot",durationMs:Date.now()-startedAt}
+      });
+    }
+    const spot=expandShortHandedPreflopForSixMax(normalizeSolverSpot(parsedSpot.data));
     const missing=solverReadiness(spot);
     if(missing.length)return res.status(422).json({error:"incomplete_hand",message:"Complete the missing hand details before solving.",missingFields:missing,debug:{requestId,stage:"readiness",spot}});
     stage="provider_prepare";
     if(spot.tableSize<3||spot.tableSize>6)return res.status(422).json({error:"unsupported_format",message:"The current Pokerai adapter supports 3–6 handed NLH. Heads-up and larger tables require the fallback solver provider."});
 
     if(spot.decisionStreet==="preflop"){
-      const actions=(spot.actionHistory||[]).filter(a=>a.street==="preflop").map(pokeraiPreflopAction).filter(Boolean);
+      const actions=pokeraiPreflopActions((spot.actionHistory||[]).filter(a=>a.street==="preflop"));
       const result=await pokeraiPost("/v1/gto/preflop",{
         hole_cards:spot.heroCards.join(""),
         positions:{hero:spot.heroPosition},
