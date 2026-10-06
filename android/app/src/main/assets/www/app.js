@@ -824,7 +824,8 @@ function solverReview(){
     </section>
     <div class="solver-study-note"><strong>Post-hand study only</strong><span>Never use solver output while a real-money hand is in progress.</span></div>
     <button class="btn primary solver-run-btn" data-run-solver="${esc(h.id)}" ${ready?'':'disabled'}>Run solver <span>›</span></button>
-    <button class="btn ghost" data-save-solver-spot>Save details</button>`,'sessions');
+    <button class="btn ghost" data-save-solver-spot>Save details</button>
+    ${solverDebugPanel(h)}`,'sessions');
 }
 function solverStrategyBars(strategy=[]){
   if(!strategy.length)return '<div class="empty">No mixed-strategy data returned.</div>';
@@ -841,12 +842,14 @@ function solverResult(){
   if(['starting','pending'].includes(h.solverStatus)&&!h.solverResult){
     return appShell(`${header('GTO <span class="accent">Solution</span>','Your solve is running.')}
       <section class="card pad solver-running-card"><span class="solver-spinner"></span><strong>Solving the exact spot…</strong><p>Custom trees can take a little while. You can leave this screen; Inner Game will keep the job saved and resume polling later.</p></section>
-      <section class="card pad solver-assumptions"><small class="eyebrow">ASSUMPTIONS</small>${(h.solverJob?.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>`,'sessions');
+      <section class="card pad solver-assumptions"><small class="eyebrow">ASSUMPTIONS</small>${(h.solverJob?.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>
+      ${solverDebugPanel(h)}`,'sessions');
   }
   const s=h.solverResult;
   if(!s){
     return appShell(`${header('GTO <span class="accent">Solution</span>','')}
-      <section class="card pad solver-error-card"><strong>Solver unavailable</strong><p>${esc(h.solverError||'The solve could not be completed.')}</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Review spot</button></section>`,'sessions');
+      <section class="card pad solver-error-card"><strong>Solver unavailable</strong><p>${esc(h.solverError||'The solve could not be completed.')}</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Review spot</button></section>
+      ${solverDebugPanel(h)}`,'sessions');
   }
   const ev=s.evs, bestEv=Number.isFinite(Number(s.bestEv))?Number(s.bestEv):null;
   return appShell(`${header('GTO <span class="accent">Solution</span>','')}
@@ -860,7 +863,8 @@ function solverResult(){
     <section class="card pad solver-why-card"><div class="section-title">💡 Why</div><strong>${esc(s.explanation?.summary||'')}</strong><p>${esc(s.explanation?.details||'')}</p>${(s.explanation?.facts||[]).length?`<div class="solver-facts">${s.explanation.facts.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}</section>
     <section class="card pad solver-assumptions"><div class="section-title">Assumptions</div>${(s.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>
     <div class="solver-study-note"><strong>Post-hand study only</strong><span>Solver results are for review and training, not live assistance.</span></div>
-    <button class="btn secondary" data-solve-hand="${esc(h.id)}">Review & solve again</button>`,'sessions');
+    <button class="btn secondary" data-solve-hand="${esc(h.id)}">Review & solve again</button>
+    ${solverDebugPanel(h)}`,'sessions');
 }
 async function runSolverForHand(id){
   const h=findHandRecord(id);if(!h)return;
