@@ -679,7 +679,9 @@ function solverLocalHistoryIssues(spot){
       }else if(a.action==='bet'||a.action==='donk_bet'){
         if(outstanding){issues.push(street+': bet while a bet is already outstanding');break;}
         outstanding=true;checks=0;
-      }else if(a.action==='raise'||a.action==='allin'){
+      }else if(a.action==='allin'){
+        outstanding=true;checks=0;
+      }else if(a.action==='raise'){
         if(!outstanding){issues.push(street+': raise without a prior bet');break;}
         outstanding=true;checks=0;
       }else if(a.action==='call'){
@@ -735,25 +737,52 @@ function solverSelect(label,key,value,options){
 }
 async function inspectHandForSolver(id,force=false){
   const hand=findHandRecord(id); if(!hand)return;
+  if(solverInspectingHandId===id)return;
   solverReviewHandId=id;
-  if(hand.solverSpot&&hand.solverSpotVersion>=5&&!force){ navigate('solverReview'); return; }
+  if(hand.solverSpot&&hand.solverSpotVersion>=6&&!force){ navigate('solverReview'); return; }
   route='solverReview'; solverInspectingHandId=id; solverDebugAdd(hand,'inspect:start',{force,spotVersion:hand.solverSpotVersion||0}); render();
   try{
     const imageDataUrl=await getHandImage(hand.imageKey);
     if(!imageDataUrl)throw new Error('Screenshot image is missing.');
-    const res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/inspect',{
+    const apiBase=HAND_ANALYSIS_API_URL.replace(/\/$/,'');
+    let res=await fetch(apiBase+'/solver/inspect',{
+      signal:AbortSignal.timeout(30_000),
       method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
-      body:JSON.stringify({imageDataUrl,hand:{
+      body:JSON.stringify({imageDataUrl,async:true,hand:{
         title:hand.title,gameType:hand.gameType,site:hand.site,stakes:hand.stakes||hand.blinds,
         heroPosition:hand.heroPosition,heroCards:hand.heroCards,board:hand.board,pot:hand.pot,
         actionSummary:hand.actionSummary
       }})
     });
-    const json=await res.json().catch(()=>({}));
+    let json=await res.json().catch(()=>({}));
+    if(res.status===202&&json.inspectionId){
+      const inspectionId=json.inspectionId;
+      const deadline=Date.now()+5*60_000;
+      let consecutiveNetworkErrors=0;
+      do{
+        await new Promise(resolve=>setTimeout(resolve,1500));
+        try{
+          res=await fetch(apiBase+'/solver/inspect/poll',{
+            signal:AbortSignal.timeout(30_000),
+            method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
+            body:JSON.stringify({inspectionId})
+          });
+          json=await res.json();
+          consecutiveNetworkErrors=0;
+        }catch(error){
+          consecutiveNetworkErrors++;
+          if(consecutiveNetworkErrors>=12)throw error;
+          continue;
+        }
+        if(res.status!==202&&(res.status<500||json.error))break;
+      }while(Date.now()<deadline);
+      if(res.status===202)throw new Error('The screenshot is taking longer than expected. Try reading it again.');
+    }
     solverDebugAdd(hand,'inspect:http',{status:res.status,ok:res.ok,debug:json.debug||null,error:json.error||'',message:json.message||''});
     if(!res.ok)throw new Error(json.message||json.error||'Could not read the hand for solving.');
+    if(!json.spot)throw new Error('The screenshot reader returned no hand details. Try again.');
     hand.solverSpot=json.spot;
-    hand.solverSpotVersion=5;
+    hand.solverSpotVersion=6;
     hand.solverResult=null;
     hand.solverJob=null;
     hand.solverStatus='';
