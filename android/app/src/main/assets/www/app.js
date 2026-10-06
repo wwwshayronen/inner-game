@@ -608,6 +608,37 @@ function handDetail(){
     </div>`,'sessions');
 }
 
+const SOLVER_DEBUG_BUILD=true;
+function solverDebugAdd(hand,stage,data={}){
+  if(!hand)return;
+  if(!Array.isArray(hand.solverDebug))hand.solverDebug=[];
+  hand.solverDebug.push({at:new Date().toISOString(),stage,data});
+  if(hand.solverDebug.length>80)hand.solverDebug=hand.solverDebug.slice(-80);
+  save();
+}
+function solverDebugText(hand){
+  return JSON.stringify({
+    build:"solver-debug-v1",
+    handId:hand?.id||"",
+    title:hand?.title||"",
+    solverStatus:hand?.solverStatus||"",
+    solverError:hand?.solverError||"",
+    spotVersion:hand?.solverSpotVersion||0,
+    spot:hand?.solverSpot||null,
+    job:hand?.solverJob?{provider:hand.solverJob.provider,decisionStreet:hand.solverJob.decisionStreet,heroHand:hand.solverJob.heroHand,expectedSegments:hand.solverJob.expectedSegments,debugRequestId:hand.solverJob.debugRequestId}:null,
+    events:hand?.solverDebug||[]
+  },null,2);
+}
+function solverDebugPanel(hand){
+  if(!SOLVER_DEBUG_BUILD)return "";
+  const count=(hand?.solverDebug||[]).length;
+  const errorBadge=hand?.solverError?'<span class="negative">error</span>':'';
+  return '<section class="card pad solver-debug-card">'+
+    '<div class="row between"><div><small class="eyebrow">DEBUG BUILD</small><div class="section-title">Solver trace</div></div><button class="btn tiny secondary" data-copy-solver-debug>Copy trace</button></div>'+
+    '<div class="solver-debug-summary"><span>'+count+' events</span><span>'+esc(hand?.solverStatus||'idle')+'</span>'+errorBadge+'</div>'+
+    '<pre id="solverDebugOutput">'+esc(solverDebugText(hand))+'</pre>'+
+  '</section>';
+}
 function solverHand(){ return solverReviewHandId?findHandRecord(solverReviewHandId):selectedHand(); }
 function solverActionLines(actions=[]){
   return actions.map(a=>[a.street,a.position,a.action,Number(a.amountBb)||0,Number(a.sizePctPot)||0].join(' | ')).join('\n');
