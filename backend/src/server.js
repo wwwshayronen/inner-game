@@ -222,6 +222,25 @@ function normalizePosition(position=""){
 function preflopVersion(stackBb){
   return Number(stackBb)>0 && Number(stackBb)<=60 ? "6max_RC_40bb" : "6max_RC_100bb_200NL";
 }
+function expandShortHandedPreflopForSixMax(spot){
+  const n=Number(spot.tableSize)||6;
+  if(n>=6||n<3)return spot;
+  const missingLeading=["UTG","MP","CO"].slice(0,6-n);
+  const rows=Array.isArray(spot.actionHistory)?spot.actionHistory:[];
+  const pre=rows.filter(a=>a.street==="preflop");
+  const rest=rows.filter(a=>a.street!=="preflop");
+  const posts=pre.filter(a=>["small_blind","big_blind"].includes(a.action));
+  const voluntary=pre.filter(a=>!["small_blind","big_blind"].includes(a.action));
+  const seen=new Set(voluntary.map(a=>normalizePosition(a.position)));
+  const synth=missingLeading.filter(p=>!seen.has(p)).map(position=>({
+    street:"preflop",position,action:"fold",amountBb:0,sizePctPot:0,synthetic:true
+  }));
+  if(synth.length){
+    spot.actionHistory=[...posts,...synth,...voluntary,...rest];
+    spot.extractionNotes=[...(spot.extractionNotes||[]),`Short-handed ${n}-max mapped to 6-max preflop by treating empty early seats as folds: ${synth.map(x=>x.position).join(", ")}.`];
+  }
+  return spot;
+}
 function actionKey(action){
   const a=String(action||"").toLowerCase();
   if(a==="allin") return "raise";
@@ -721,11 +740,11 @@ app.post("/solver/solve", async (req,res)=>{
   try{
     if(!POKERAI_KEY)return res.status(503).json({error:"solver_not_configured",message:"Pokerai API key is not configured yet.",debug:{requestId,stage:"provider_config"}});
     stage="parse_spot";
-    const spot=normalizeSolverSpot(solverSpotSchema.parse(req.body?.spot||{}));
+    const spot=expandShortHandedPreflopForSixMax(normalizeSolverSpot(solverSpotSchema.parse(req.body?.spot||{})));
     const missing=solverReadiness(spot);
     if(missing.length)return res.status(422).json({error:"incomplete_hand",message:"Complete the missing hand details before solving.",missingFields:missing,debug:{requestId,stage:"readiness",spot}});
     stage="provider_prepare";
-    if(spot.tableSize!==6)return res.status(422).json({error:"unsupported_format",message:"The configured Pokerai range seed currently supports 6-max NLH. The provider layer is ready for another format provider."});
+    if(spot.tableSize<3||spot.tableSize>6)return res.status(422).json({error:"unsupported_format",message:"The current Pokerai adapter supports 3–6 handed NLH. Heads-up and larger tables require the fallback solver provider."});
 
     if(spot.decisionStreet==="preflop"){
       const actions=(spot.actionHistory||[]).filter(a=>a.street==="preflop").map(pokeraiPreflopAction).filter(Boolean);
@@ -771,6 +790,7 @@ app.post("/solver/solve", async (req,res)=>{
       `Hero preflop range seeded from ${heroRangeInfo.version}`,
       `Villain preflop range seeded from ${villainRangeInfo.version}`,
       ...(spot.format==="tournament"?["Tournament postflop is solved in chip EV; preflop seed uses the nearest available 6-max 40bb/100bb chart, not ICM."]:[]),
+      ...(spot.tableSize<6?[`${spot.tableSize}-handed preflop mapped to 6-max by treating empty earlier seats as folds.`]:[]),
       "Observed bet sizes included in the custom tree",
       "Post-hand study only"
     ];
