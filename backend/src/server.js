@@ -60,7 +60,7 @@ const schema = {
 const solverActionSchema = z.object({
   street:z.enum(["preflop","flop","turn","river"]),
   position:z.string(),
-  action:z.enum(["small_blind","big_blind","fold","check","call","bet","raise","allin","unknown"]),
+  action:z.enum(["small_blind","big_blind","fold","check","call","bet","donk_bet","raise","allin","unknown"]),
   amountBb:z.number(),
   sizePctPot:z.number()
 });
@@ -123,7 +123,7 @@ const solverInspectJsonSchema = {
         properties:{
           street:{type:"string",enum:["preflop","flop","turn","river"]},
           position:{type:"string"},
-          action:{type:"string",enum:["small_blind","big_blind","fold","check","call","bet","raise","allin","unknown"]},
+          action:{type:"string",enum:["small_blind","big_blind","fold","check","call","bet","donk_bet","raise","allin","unknown"]},
           amountBb:{type:"number"},
           sizePctPot:{type:"number"}
         }
@@ -308,7 +308,7 @@ function solverActionHistoryIssues(spot){
         if(outstanding){issues.push(`${street}: check appears while facing a bet`);break;}
         checks+=1;
         if(checks>=2)terminal=true;
-      }else if(a.action==="bet"){
+      }else if(a.action==="bet"||a.action==="donk_bet"){
         if(outstanding){issues.push(`${street}: bet appears while a bet is already outstanding`);break;}
         outstanding=true;checks=0;
       }else if(["raise","allin"].includes(a.action)){
@@ -334,7 +334,7 @@ function normalizeSolverSpot(spot){
   spot.board=validateCards(spot.board).map(normalizeCard);
   spot.heroPosition=normalizePosition(spot.heroPosition);
   spot.villainPosition=normalizePosition(spot.villainPosition);
-  spot.actionHistory=(spot.actionHistory||[]).map(a=>({...a,position:normalizePosition(a.position)}));
+  spot.actionHistory=(spot.actionHistory||[]).map(a=>({...a,position:normalizePosition(a.position),action:a.action==="donk_bet"?"bet":a.action}));
   ensureBlindPosts(spot);
   stripObservedHeroDecision(spot);
   return spot;
@@ -396,7 +396,7 @@ function solverReadiness(spot){
 function actionSegment(action){
   if(action.action==="check")return {type:"CHECK"};
   if(action.action==="call")return {type:"CALL"};
-  if(action.action==="bet")return {type:"BET",amount:Number(action.amountBb)||0};
+  if(action.action==="bet"||action.action==="donk_bet")return {type:"BET",amount:Number(action.amountBb)||0};
   if(["raise","allin"].includes(action.action))return {type:"RAISE",amount:Number(action.amountBb)||0};
   if(action.action==="fold")return {type:"FOLD"};
   return null;
@@ -448,7 +448,7 @@ function nodeMatchScore(node, expected){
 function observedSizingConfig(spot){
   const bet_sizes={},raise_sizes={},donk_sizes={};
   for(const street of ["flop","turn","river"]){
-    const bets=(spot.actionHistory||[]).filter(a=>a.street===street&&a.action==="bet"&&a.sizePctPot>0).map(a=>Math.round(a.sizePctPot));
+    const bets=(spot.actionHistory||[]).filter(a=>a.street===street&&["bet","donk_bet"].includes(a.action)&&a.sizePctPot>0).map(a=>Math.round(a.sizePctPot));
     const raises=(spot.actionHistory||[]).filter(a=>a.street===street&&["raise","allin"].includes(a.action)&&a.sizePctPot>0).map(a=>Math.round(a.sizePctPot));
     const baseBets=[33,67,100,...bets];
     bet_sizes[street]=[...new Set(baseBets)].filter(x=>x>=5&&x<=300).slice(0,6);
