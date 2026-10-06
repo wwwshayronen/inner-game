@@ -872,7 +872,7 @@ async function runSolverForHand(id){
   const spot=collectSolverSpot()||h.solverSpot;
   const missing=solverMissing(spot);
   if(missing.length){h.solverError='Complete the highlighted hand details first.';save();render();return;}
-  h.solverError='';h.solverStatus='starting';save();route='solverResult';render();
+  h.solverError='';h.solverStatus='starting';solverDebugAdd(h,'solve:start',{spot});save();route='solverResult';render();
   try{
     let res=null,json={},lastError=null;
     for(let attempt=0;attempt<4;attempt++){
@@ -881,22 +881,24 @@ async function runSolverForHand(id){
           method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({spot})
         });
         json=await res.json().catch(()=>({}));
+        solverDebugAdd(h,'solve:http',{attempt:attempt+1,status:res.status,ok:res.ok,debug:json.debug||null,error:json.error||'',message:json.message||''});
         if(res.ok||res.status===202)break;
         if(res.status<500)break;
         lastError=new Error(json.message||json.error||('HTTP '+res.status));
       }catch(error){
         lastError=error;
+        solverDebugAdd(h,'solve:fetch_error',{attempt:attempt+1,message:String(error?.message||error),stack:String(error?.stack||'')});
       }
       if(attempt<3)await new Promise(resolve=>setTimeout(resolve,700*(attempt+1)));
     }
     if(!res)throw lastError||new Error('Network unavailable. Your hand is still saved.');
     if(res.status===202&&json.job){
-      h.solverJob=json.job;h.solverStatus='pending';save();render();pollSolverJob(id);return;
+      h.solverJob=json.job;h.solverStatus='pending';solverDebugAdd(h,'solve:scheduled',{debug:json.debug||null,job:{provider:json.job.provider,decisionStreet:json.job.decisionStreet,expectedSegments:json.job.expectedSegments,debugRequestId:json.job.debugRequestId}});save();render();pollSolverJob(id);return;
     }
     if(!res.ok)throw new Error(json.message||json.error||lastError?.message||'Solver request failed.');
     h.solverResult=json.solution;h.solverJob=null;h.solverStatus='solved';save();render();
   }catch(error){
-    h.solverStatus='failed';h.solverError=String(error?.message||error);save();render();
+    h.solverStatus='failed';h.solverError=String(error?.message||error);solverDebugAdd(h,'solve:error',{message:String(error?.message||error),stack:String(error?.stack||'')});save();render();
   }
 }
 async function pollSolverJob(id){
