@@ -1576,6 +1576,12 @@ function bind(){
   });
   document.querySelectorAll('[data-reinspect-solver]').forEach(el=>el.onclick=()=>inspectHandForSolver(el.dataset.reinspectSolver,true));
   const saveSolverSpot=document.querySelector('[data-save-solver-spot]');if(saveSolverSpot)saveSolverSpot.onclick=()=>{collectSolverSpot();captureToast('Solver details saved ✓');render();};
+  const copySolverDebug=document.querySelector('[data-copy-solver-debug]');if(copySolverDebug)copySolverDebug.onclick=async()=>{
+    const h=solverHand();if(!h)return;
+    const payload=solverDebugText(h);
+    try{await navigator.clipboard.writeText(payload);captureToast('Debug trace copied ✓');}
+    catch{captureToast('Could not copy debug trace.','error');}
+  };
   document.querySelectorAll('[data-run-solver]').forEach(el=>el.onclick=()=>runSolverForHand(el.dataset.runSolver));
   document.querySelectorAll('[data-save-hand-notes]').forEach(el=>el.onclick=()=>{const h=findHandRecord(el.dataset.saveHandNotes);if(!h)return;h.notes=(document.getElementById('handNotes')?.value||'').trim();save();const hint=document.getElementById('notesSavedHint');if(hint){hint.textContent='Saved';setTimeout(()=>{if(hint)hint.textContent='';},1600);}captureToast('Note saved ✓');});
   document.querySelectorAll('[data-edit-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.editHand);if(pendingCapturedHand)navigate('captureReview');});
