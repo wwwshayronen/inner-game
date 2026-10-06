@@ -402,14 +402,21 @@ function actionSegment(action){
   return null;
 }
 function expectedPostflopSegments(spot){
-  // /solver/tree returns the tree for the requested street. When turn_card /
-  // river_card are supplied, its node ids restart at "root" for that street;
-  // they do NOT contain the prior flop/turn action path. Match only actions
-  // that occurred on the decision street before Hero's decision.
-  return (spot.actionHistory||[])
-    .filter(a=>a.street===spot.decisionStreet)
-    .map(actionSegment)
-    .filter(Boolean);
+  // Pokerai's later-street trees preserve the full path from flop root and
+  // insert turn/river cards as chance nodes, e.g.
+  // root/CHECK/BET .../CALL/2s/CHECK/.../Jd/BET ...
+  const segments=[];
+  const board=(spot.board||[]).map(normalizeCard);
+  for(const street of ["flop","turn","river"]){
+    for(const action of (spot.actionHistory||[]).filter(a=>a.street===street)){
+      const segment=actionSegment(action);
+      if(segment)segments.push(segment);
+    }
+    if(street==="flop" && board[3])segments.push({type:"CARD",card:board[3]});
+    if(street==="turn" && board[4])segments.push({type:"CARD",card:board[4]});
+    if(street===spot.decisionStreet)break;
+  }
+  return segments;
 }
 function parseNodeSegments(node){
   return String(node||"").split("/").slice(1).map(raw=>{
@@ -439,14 +446,19 @@ function nodeMatchScore(node, expected){
   return score;
 }
 function observedSizingConfig(spot){
-  const bet_sizes={},raise_sizes={};
+  const bet_sizes={},raise_sizes={},donk_sizes={};
   for(const street of ["flop","turn","river"]){
     const bets=(spot.actionHistory||[]).filter(a=>a.street===street&&a.action==="bet"&&a.sizePctPot>0).map(a=>Math.round(a.sizePctPot));
     const raises=(spot.actionHistory||[]).filter(a=>a.street===street&&["raise","allin"].includes(a.action)&&a.sizePctPot>0).map(a=>Math.round(a.sizePctPot));
-    bet_sizes[street]=[...new Set([33,67,100,...bets])].filter(x=>x>=5&&x<=300).slice(0,5);
-    raise_sizes[street]=[...new Set([50,100,...raises])].filter(x=>x>=10&&x<=400).slice(0,5);
+    const baseBets=[33,67,100,...bets];
+    bet_sizes[street]=[...new Set(baseBets)].filter(x=>x>=5&&x<=300).slice(0,6);
+    // A lead from OOP on a later street after calling the previous street is a
+    // donk in Pokerai's tree. Include the observed bet sizings here as well so
+    // exact hand-history lines such as a 100% river donk exist in the tree.
+    donk_sizes[street]=[...new Set(baseBets)].filter(x=>x>=5&&x<=300).slice(0,6);
+    raise_sizes[street]=[...new Set([50,100,...raises])].filter(x=>x>=10&&x<=400).slice(0,6);
   }
-  return {bet_sizes,raise_sizes};
+  return {bet_sizes,raise_sizes,donk_sizes};
 }
 async function explainSolution({spot,strategy,evs,bestAction,provider,assumptions}){
   try{
@@ -612,6 +624,7 @@ app.post("/solver/solve", async (req,res)=>{
       hero:heroIsOop?"OOP":"IP",
       bet_sizes:sizing.bet_sizes,
       raise_sizes:sizing.raise_sizes,
+      donk_sizes:sizing.donk_sizes,
       raise_limit:3
     });
     const solve=schedule.solve;
