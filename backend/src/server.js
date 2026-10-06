@@ -1027,5 +1027,80 @@ app.post("/solver/poll", async (req,res)=>{
   }
 });
 
+
+let solverSmokeJob=null;
+app.post("/__debug/solver-smoke-50ad0bb/start", async (_req,res)=>{
+  try{
+    const base=`http://127.0.0.1:${process.env.PORT||3000}`;
+    const spot={
+      confidence:1,game:"NLH",format:"cash",tableSize:6,
+      heroPosition:"CO",villainPosition:"UTG",heroRole:"IP",
+      heroCards:["Ah","Qh"],board:["Ad","Ts","8c","5h","Jd"],
+      decisionStreet:"river",
+      effectiveStackBb:128.79,potAtDecisionBb:161.46,
+      heroStackBb:128.79,villainStackBb:128.79,
+      flopStartPotBb:34.5,flopStartEffectiveStackBb:156.39,
+      actionHistoryComplete:true,
+      observedHeroAction:"raise",observedHeroAmountBb:128.79,
+      heroDisplayedStackBb:0,villainDisplayedStackBb:72.38,
+      displayedStacksTiming:"after_decision_before_pot_award",
+      finalPotBb:347.28,
+      streetStartPotsBb:{preflop:1.5,flop:34.5,turn:34.5,river:89.7},
+      actionHistory:[
+        {street:"preflop",position:"SB",action:"small_blind",amountBb:.5,sizePctPot:0},
+        {street:"preflop",position:"BB",action:"big_blind",amountBb:1,sizePctPot:0},
+        {street:"preflop",position:"UTG",action:"raise",amountBb:2,sizePctPot:0},
+        {street:"preflop",position:"MP",action:"fold",amountBb:0,sizePctPot:0},
+        {street:"preflop",position:"CO",action:"raise",amountBb:7,sizePctPot:0},
+        {street:"preflop",position:"BTN",action:"fold",amountBb:0,sizePctPot:0},
+        {street:"preflop",position:"SB",action:"fold",amountBb:0,sizePctPot:0},
+        {street:"preflop",position:"BB",action:"fold",amountBb:0,sizePctPot:0},
+        {street:"preflop",position:"UTG",action:"raise",amountBb:16.5,sizePctPot:0},
+        {street:"preflop",position:"CO",action:"call",amountBb:9.5,sizePctPot:0},
+        {street:"flop",position:"UTG",action:"check",amountBb:0,sizePctPot:0},
+        {street:"flop",position:"CO",action:"check",amountBb:0,sizePctPot:0},
+        {street:"turn",position:"UTG",action:"bet",amountBb:27.6,sizePctPot:80},
+        {street:"turn",position:"CO",action:"call",amountBb:27.6,sizePctPot:0},
+        {street:"river",position:"UTG",action:"bet",amountBb:71.76,sizePctPot:80}
+      ],
+      missingFields:[],extractionNotes:["smoke fixture from 7XL screenshot"]
+    };
+    const rr=await fetch(base+"/solver/solve",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({spot})});
+    const json=await rr.json();
+    if(rr.status!==202||!json.job){
+      console.error(JSON.stringify({event:"solver_smoke_start_failed",status:rr.status,json}));
+      return res.status(500).json({ok:false,status:rr.status,json});
+    }
+    solverSmokeJob=json.job;
+    console.log(JSON.stringify({event:"solver_smoke_scheduled",debug:json.debug,expected:json.job.expectedSegments}));
+    return res.json({ok:true,scheduled:true});
+  }catch(error){
+    console.error(JSON.stringify({event:"solver_smoke_start_exception",error:String(error?.stack||error)}));
+    return res.status(500).json({ok:false,error:String(error?.message||error)});
+  }
+});
+app.post("/__debug/solver-smoke-50ad0bb/poll", async (_req,res)=>{
+  try{
+    if(!solverSmokeJob)return res.status(404).json({ok:false,error:"no smoke job"});
+    const base=`http://127.0.0.1:${process.env.PORT||3000}`;
+    const rr=await fetch(base+"/solver/poll",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({job:solverSmokeJob})});
+    const json=await rr.json();
+    if(rr.status===202){
+      console.log(JSON.stringify({event:"solver_smoke_pending",debug:json.debug}));
+      return res.status(202).json({ok:true,pending:true});
+    }
+    if(!rr.ok){
+      console.error(JSON.stringify({event:"solver_smoke_poll_failed",status:rr.status,json}));
+      return res.status(500).json({ok:false,status:rr.status,json});
+    }
+    console.log(JSON.stringify({event:"solver_smoke_solved",bestAction:json.solution?.bestAction,strategy:json.solution?.strategy,evs:json.solution?.evs,node:json.solution?.node,debug:json.debug}));
+    solverSmokeJob=null;
+    return res.json({ok:true,solved:true,bestAction:json.solution?.bestAction,node:json.solution?.node});
+  }catch(error){
+    console.error(JSON.stringify({event:"solver_smoke_poll_exception",error:String(error?.stack||error)}));
+    return res.status(500).json({ok:false,error:String(error?.message||error)});
+  }
+});
+
 const port = Number(process.env.PORT || 3000);
 app.listen(port,()=>console.log(`Inner Game hand analysis API listening on ${port}`));
