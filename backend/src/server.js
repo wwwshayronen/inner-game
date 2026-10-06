@@ -1119,6 +1119,51 @@ app.post("/solver/poll", async (req,res)=>{
 });
 
 
+let pipelineSmokeSpot=null;
+let pipelineSmokeJob=null;
+const PIPELINE_SMOKE_IMAGE="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAArwAAAM0AQAAAABxVczvAAAQLklEQVR42u2dUWwc13VAz5sdc9cBI64CNV6lEjlWDcRoAYUy+kHBsjQyBFQ/LfzXfhjwGu5HWxQu1RYuFdDmo0rAjJHW2yBA/WOYAQy0X60DtKgKKNJQpSHaMGLaBdo0SMQhzcTrQg1nadqaXe7M68fsLpcUJXJnl4iS3PnhznuPZy7vnRneu/e+95RhX46KxT4dAhawgAUsYAEL+D4GVw7feGz2hMtyVPvYovKAPTfrAEsTztGzJ1z+5sXqjVwXEvu8UdfJx9PJj6sBGh/qmnoqcH9R+9nZUQ5g/NMcGBk/MuIDGd+rZ2dHAbTTlY7/bltbPaw2Ww50azwXgHLzdK37u6KqobLhMQdMf73VW9WwvuGlBrt5TGmz7RmIFJFD3Gh200uc1Q65CO8UMFZo6qWQ1Q79UVcPiPK3NGcMGY3Z3pzGeJrRzBYTYuds0JBJZUUL1mfcfNUNCAOf68DUfOsCF90AAt9NIbfd/DDCs82Pf924Zt7AyNZRez+UxCACFrCABSxgAf8ig51uwJHT8oaZ3zJkCTAuhACYvYNXDsMNF4gATCLedGvEZLtTG4HJdyZx03GrBQCMbw55jcTDercMEbXT4V7B8daWhFJonfc3P3g2QKh+1JHEkUsJM3SIaj53KdLmEZbP5A83+oYeWak6fLkANazrnRmv7hMSBz8DU5+oe6xgboZ/3Bx1Mw6DO/3IvYBr1VFey9Qvnwf8wT64iT3pPQmwrjMM/1T53ALWibW/V7DaGjWpmZ8Aw0tY7aGHeaoRV+a8+U4k7mtD6JcaquURgH4NkPP5GlCmzy+lePJCIC7+FcAQda/N/tnRpm4nnBTgMcgG6B3GheABC4R7DM4sUOQgW1r5I+wS4MxMg/oQcP8LYJ3DK3ylqnlvpQTUXprqSGLb0TmsHPR9yZkEpsB2JyD5iJXLcxaYIbfHN1IHMUiYA9czaj9iELP34LdDiWEfJE6+v1GQ4naTf6YCFrCABSzg+wEceAAsrwFcg5WGO3mtPrec+D/+s0+46SWOIoAZqLWaRo40Phy9NpMerCp6M0oCGLKbnm2aiMwCoomSs9CIPZiGSqNvBczQmekypMiwWIBxP15oNdyCuCF6AcwH+lY649lQGf+Hl2vDDR+q9EU4uOW60zaA43cu8YDeuesAEDV166VRRdW9a9gc+d08IFl/E+nfxX1OBbZ9FS5gBjSYHAxti1PLrKYzHqo4O/wWmWY0bTdi4P63r1hXgx9+Bl/Sptipknfwj2t9PXhV7OQf2/v1drP2Cyz/QQQsYAELWMACFrCABSxgAQtYwAIWsIAFLGAB9xC8dHHImn2MvN1zib0AMGHca3DGv3w661F8aH90HNd/oe6KuareB3DknAfgk56CbcD96Yms7rVWbMjoL38X4EjvdewCVm+fjyQ3EV7H5KuF3kt8BFC53kos80EELGABC1jAAv5VBFcvuI2TSEd57EsYooGWmzHDpdl04NUbRYAAjKsCXngcUD+4BcnEC4/HB1M4uTbkvObM67oD2BZA/oHmCI2lSAUG4mOj6/EzQ1u73vw9o9/7yE+v4xDPLJRrzxtttHGoxwBBSC0yv3ttAYhTuWHGhMGZ6PONidVF8/kz0arJTJrY1A9kzdXFP4s2jFk0k57p+AgsyP5OESixgtJWrt14a0Qa0hnPArQLLHMy+fWG8XLAUTebh3TGaz0g/a15Qm0+rqbYxQNS1p6pjmt8bP90uGm8xYHRpDIvlfEsePDkjBou9FlKK08N88rbgHn0EH0ZNXt2mEd5ezmFjhOPPt76ykjmI3jur5ZHv2NwY1TX3J1Voe5nVQhYwAIWsIAFfP+Bg+8OOTSnnANzVE46+Lx+HZyqrkOd6IzbPmSSpYvO7hIfWFxgMzDgf8g+9xbAUW38bMMheGOmfcg4A//x1l5ChTzNSZnAMXAPbfcCBtfbh6jdl7SyGsHRm3PzS9WqG5VKrUnAB6A25FKaIpkP0jakA+PVasNmYmImM1oG8BohTd/iDOXanUNi2G2idwIuccyFMdfBTGGovv4UgIE4b6ab124bApUnntoLuAhTrJCsVRA3jNffcItbf/nmkPruxmvdx1c4eeFVJ/ktXAfINeK+5TuHsLvx7CbdJTOQqDbc9m19f3PY3YfcJYDUiZx+7jKocYJN42EFakwDLAftQ9iT8R501TD0f0NNzhbJF/hO03iAKuYLfYB6ttg+JNjdeHfNKvhtOqx3nnyRrMIedLwvwY38zxOwgAUsYAH/coKXLnwlYIU8GjTTNpGuEELI0gWXeeOYlOCB7/tQb0wPNrdewOjGArQDN4qEykutCt0ebHyz3Z3Sbtc6fmSeteZs95+8qHEajqo5X2JlKa3EaH60TmRcQNf59QnXvL8OoD11uUzN6FTgiquA61RwQeVfgbpj8jZQOTmDmWKZdOCBpnXWAP7wheTEaRgPYCW1KhIbHXWBXGI8NddmvJO6uwdEtf9+ezlSJrXEDpxmIADMWB1sXyXT0LWHGmfQJ6XxAPqtjPJAffsVULMPn+hvGI+C3adSqIKtSa2Jts+3TRdHIK9NiUEELGABC1jAAu4heHsepFyh6pic3Up/5Kchck2us6IsY1avRqstx2fCmP/+eGLDxJ9eNBtm48eLxpjV28ZUF2Njrtyc6NATytOW5HByuuXODuabf1mezup6dsiDELR660BpDiqde4XNGKlW++3yBEkepEJ07lrYnB9SrjVWBs0HHdX1GLN6deNVcy26vbj6b8a8tGFuf39iYzHOZsyGub2xGpto9faqqb4f3+6kKCvYIQ/CQew8t15oXnoK1sgUld1RUdYOeZDkyNmbPRx1M16HxtshD7K91wWlCfIdPyDb8yAMmPGAxHjLgRqrQ0Dde6PeUVHWDnmQdy2tihx6hST9Uei3lPLUjCp0VJR1L/+43sXcE/GP9wa2RRUCFrCABSxgAQtYwAIWsIAFLGABC1jAAhbwfQve3KOwdsewGlCZyCcnzh7BS4eZnoUZqNpQdTavMxXpKMfSyQQYxDQre6Iz9jKRM0flaO6eEo+jGU0a2nbg48Xkh58kdTJ6tNmxDovUy1chqN8dnPEZ7vMAske21vSM1WGMzJ07Ylic6iPj/T1KF+8lsYkhmUVhk6RwzCPLZQfdvoFi/vW/LGG/ftHN1eiHd3b5TrXNeCGYmOyrdQB/EXiHzUkbJkwkCBfrITBfxZzfBRy5AOYPXgNOYQ+OABx/7zUf1iFsLG8VP/3cN0c59dzL8cgaUE9SBqb05r0lrrnJz3f57Klzrc6vlVFXmiczSf8DnLOBm/2osfK9Jc54gGYGUFttnFv3LIeMf7nZoOqsQx1UHnA1avTpe0vcmL7Ez+4uwnjS/2mSpEvumt2MpyygSGPrzyubt9upM6f95smVVn8MJiAa9/79XtYz5qMwm7lh6s9pYwaVCQczpmrijBcOGVV/6VTW+IWsqZo481F9IlZ+cTBz2AR9Ga8+NjBpgv7MPbNjUyT3r7KwH062n3nYhktg5UgKF5UNKCt/UNkGlP0wdv5J7r5A3o6Zm1qfOtta+nw5SaZm1103INDdCxgAQtYwAJOD05qsXRSeOQxt5IUHunuwDZwYHGt3YWo9VAV+faWpd6BYyjNraxx0QU8iCYcp1S/3hPjlT+vRdHETMNRPPPPC+VbUQ/AJTN9bqlimqFh/cmh7HSoegBOYqqw2t6zx23Ld7+Pr/OFgVYwa/I8daF7sAVwBoVHY6tKFZLr6xYcalBjDA2oMYB4CNtT1THb6xb8oKuGKZDJcLYI9PWhPFUoWJmuwNu9za4WwxJvUzx6AQtYwAIWsIAFLGABC1jAAhawgAUsYAEL+JcI7NBai7Y34KUHb+RuuNHm1HGWKDFJNW91LfG2gio/kTw03YGPjHK8vqWEZhDNAHiF3uh4DeAb0RMrOKaXxiutAoR1H9bcxmV6Ag4LAP0X/+IIxBoD5z/pGvyh1VZ0Bf3fgxHdC4ltsJy2RjPGObj8UNfgI71/8lprTMf+ZuPN7PR8pQdg+/xvWJhzBwHWX/7qCisuzOuqW+1SFVY+mxRdATnb0TgazkKuq8TblpqvM+ZV05tDVvLaPCRzI2ABC1jAAr7/wMF3hxoOcfVinmkuzcK1fMnxiTGOA0zPgRmyWWbpgtuBxMn+IAFsfNXjX3h8UHP1Bx8v5AHz/gIwOgLxOwH/11rwdc++WyKx7cI5LAVqYOozAAaaJV8qDwdBP9qJjmMozX9riRwkq+UaTTJ9Iwbml6HqWoCfwnjl9eeNBp9pYgMm+OA3m0PWIzAzELIM2usIXGLqOmh8uMXby5rMCP/UHDLnAA4hbCQLvnYALgKsgOcxzeODmmh++E9aY65DFYKAYx0Yr3UfT3FSJwq2FKg839v0w2HAaShYd3K7YQEvkcHcsdCx1Qiy8fD8Th+QUAPjp/GJ4TtjifEq4w0fLORUDCFGUx7szHhJLVafpfRnQ3CIt5e1uvRoIRMC6sQw/X1KTRbjnMcDHRiPnR3yCWPMqol679G7tK8f13P/OE7/7vs5+cfWffqiF7CABSxgAQtYwAIWsIAFLGABC1jAAhawgAUMOCz0Erz0Yvax2RMurV1F5ony0yw5WLO6K4k92JaKqIfjAObOhas6AWc+OmxlZ0cZaWu+dpwhKHQxs7l9OaA1gLXjQcU0NN4r4xkAY0KwzzfOugZXNfApgHr+6RvJjisunzRXtUoHjhwWMKX21to/LvTiPnaZym7bT11BrHmor6u7wvIA5W9tD3ogcVK/pLfcbvz5WtS9Kn5cpuoGfPBFAPOtN6vY52cg2YmmG/AowAiXFIBSOQcrP0UNVBeFnNvyIAvDawd68g6SOqG76rhnh+hYwAIWsIAFnB68WYtVGdLGnmO24uLn5ktBtxK3arEGJlDBDxl8ucjin66Xc92rIt84Owb2scQBmr7eAx03a7GgGerg0aN9x5JaLA/CuSRYGiv/Wg/uimYtFsDnLF+cQR3h93sALgKsYDQE5xh8uYhZKfxrb+7jqc3d0BPj8YzuGtyqxaKzYrldwJu1WMAMpxrGO901eLMWK45m8L7A8sUZzn67X43vh7fpuRB28ejd1dt0aNvhVPxjAQtYwAIWsIAFLGABC1jAAhawgAUsYAELWMC9Bkd6/yR2Enw1JXjlcDZXIbLmwJ2bdIHqhAMYN5nqXdXpJa4HGq5i/OTb6PLVADIaiD0IvdTg8Hgfmb8tAEcueEBmyxzjTDc69j2YAHMMgJVTIe6Jr8+vAfMEfqnXxlsl2d1uLB04aqWa4rc2O9b7+0YKRMUipKp6S/JJH7a1VB+MAZ75364fkAxBM13lbu82ursHpH1drGwM3HO3wg7AeceFSZi9mVxnLkc/kGyQmXdIq+Pcb9WAMvWwsfmn/s/APXS8epAwgKgLibN5DU8CSdqx8GSeZlUZ5Nw04D3kQbbvV7inYy95ELVfEqc6JHMjYAELWMACFrCABSxgAQtYwAIWsIAFLGABC1jAAhawgAUsYAELWMACFrCABfzzAv8/UV6Sh43ruLwAAAAASUVORK5CYII=";
+
+app.get("/__debug/solver-pipeline-v5/inspect",async (_req,res)=>{
+  try{
+    const first=await extractSolverSpot(PIPELINE_SMOKE_IMAGE,{title:"HH NL Hold'em $1 / $2",gameType:"cash",site:"test",stakes:"$1 / $2",heroPosition:"CO",heroCards:["Ah","Qh"],board:["Ad","Ts","8c","5h","Jd"],pot:"",actionSummary:""});
+    pipelineSmokeSpot=first.spot;
+    pipelineSmokeSpot.missingFields=solverReadiness({...pipelineSmokeSpot,missingFields:pipelineSmokeSpot.missingFields||[]});
+    console.log(JSON.stringify({event:"pipeline_smoke_inspected",ready:pipelineSmokeSpot.missingFields.length===0,spot:pipelineSmokeSpot,debug:first.debug}));
+    return res.json({ok:true,ready:pipelineSmokeSpot.missingFields.length===0,spot:pipelineSmokeSpot,debug:first.debug});
+  }catch(error){
+    console.error(JSON.stringify({event:"pipeline_smoke_inspect_failed",error:String(error?.stack||error)}));
+    return res.status(Number(error?.status)||500).json({ok:false,error:String(error?.message||error)});
+  }
+});
+
+app.get("/__debug/solver-pipeline-v5/solve",async (_req,res)=>{
+  try{
+    if(!pipelineSmokeSpot)return res.status(404).json({ok:false,error:"run inspect first"});
+    const base=`http://127.0.0.1:${process.env.PORT||3000}`;
+    const rr=await fetch(base+"/solver/solve",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({spot:pipelineSmokeSpot})});
+    const json=await rr.json();
+    if(rr.status===202&&json.job)pipelineSmokeJob=json.job;
+    console.log(JSON.stringify({event:"pipeline_smoke_solve",status:rr.status,json}));
+    return res.status(rr.status).json(json);
+  }catch(error){
+    return res.status(500).json({ok:false,error:String(error?.message||error)});
+  }
+});
+
+app.get("/__debug/solver-pipeline-v5/poll",async (_req,res)=>{
+  try{
+    if(!pipelineSmokeJob)return res.status(404).json({ok:false,error:"run solve first"});
+    const base=`http://127.0.0.1:${process.env.PORT||3000}`;
+    const rr=await fetch(base+"/solver/poll",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({job:pipelineSmokeJob})});
+    const json=await rr.json();
+    if(rr.ok&&rr.status!==202)pipelineSmokeJob=null;
+    console.log(JSON.stringify({event:"pipeline_smoke_poll",status:rr.status,json}));
+    return res.status(rr.status).json(json);
+  }catch(error){
+    return res.status(500).json({ok:false,error:String(error?.message||error)});
+  }
+});
+
 const port = Number(process.env.PORT || 3000);
 if(process.env.NODE_ENV!=="test"){
   app.listen(port,()=>console.log(`Inner Game hand analysis API listening on ${port}`));
