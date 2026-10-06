@@ -624,6 +624,46 @@ function parseSolverActionLines(text=''){
     };
   }).filter(a=>['preflop','flop','turn','river'].includes(a.street));
 }
+function solverLocalHistoryIssues(spot){
+  const issues=[];
+  const rows=Array.isArray(spot?.actionHistory)?spot.actionHistory:[];
+  const pre=rows.filter(a=>a.street==='preflop');
+  if(pre.length<2||pre[0]?.action!=='small_blind'||String(pre[0]?.position||'').toUpperCase()!=='SB'||pre[1]?.action!=='big_blind'||String(pre[1]?.position||'').toUpperCase()!=='BB'){
+    issues.push('Action history must start with SB and BB blind posts');
+  }
+  if(rows.some(a=>a.action==='unknown'))issues.push('Action history contains an unknown action');
+  const hero=String(spot?.heroPosition||'').toUpperCase(), villain=String(spot?.villainPosition||'').toUpperCase();
+  for(const street of ['flop','turn','river']){
+    const actions=rows.filter(a=>a.street===street);
+    if(!actions.length)continue;
+    let outstanding=false,terminal=false,lastActor='',checks=0;
+    for(const a of actions){
+      const actor=String(a.position||'').toUpperCase();
+      if(hero&&villain&&actor!==hero&&actor!==villain){issues.push(street+': action belongs to a player who should already be out of the hand');break;}
+      if(terminal){issues.push(street+': action appears after the betting round ended');break;}
+      if(lastActor&&actor===lastActor){issues.push(street+': the same player acts twice in a row');break;}
+      if(a.action==='check'){
+        if(outstanding){issues.push(street+': check while facing a bet');break;}
+        checks++;if(checks>=2)terminal=true;
+      }else if(a.action==='bet'){
+        if(outstanding){issues.push(street+': bet while a bet is already outstanding');break;}
+        outstanding=true;checks=0;
+      }else if(a.action==='raise'||a.action==='allin'){
+        if(!outstanding){issues.push(street+': raise without a prior bet');break;}
+        outstanding=true;checks=0;
+      }else if(a.action==='call'){
+        if(!outstanding){issues.push(street+': call without a bet to call');break;}
+        outstanding=false;terminal=true;checks=0;
+      }else if(a.action==='fold'){
+        if(!outstanding){issues.push(street+': fold without a bet to fold to');break;}
+        terminal=true;checks=0;
+      }
+      lastActor=actor;
+    }
+    if(street!==spot.decisionStreet&&actions.length&&!terminal)issues.push(street+': betting round is incomplete');
+  }
+  return [...new Set(issues)];
+}
 function solverMissing(spot){
   if(!spot)return ['Hand details'];
   const missing=[];
@@ -636,6 +676,7 @@ function solverMissing(spot){
   const need={flop:3,turn:4,river:5}[spot.decisionStreet]||0;
   if(need && (!Array.isArray(spot.board)||spot.board.length<need))missing.push('Board');
   if(!spot.actionHistoryComplete)missing.push('Complete action history from preflop to this decision');
+  missing.push(...solverLocalHistoryIssues(spot));
   if(spot.decisionStreet!=='preflop'){
     if(!spot.villainPosition)missing.push('Villain position');
     if(!(Number(spot.flopStartPotBb)>0))missing.push('Pot entering flop');
@@ -652,7 +693,7 @@ function solverSelect(label,key,value,options){
 async function inspectHandForSolver(id,force=false){
   const hand=findHandRecord(id); if(!hand)return;
   solverReviewHandId=id;
-  if(hand.solverSpot&&!force){ navigate('solverReview'); return; }
+  if(hand.solverSpot&&hand.solverSpotVersion>=2&&!force){ navigate('solverReview'); return; }
   route='solverReview'; solverInspectingHandId=id; render();
   try{
     const imageDataUrl=await getHandImage(hand.imageKey);
@@ -668,6 +709,10 @@ async function inspectHandForSolver(id,force=false){
     const json=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(json.message||json.error||'Could not read the hand for solving.');
     hand.solverSpot=json.spot;
+    hand.solverSpotVersion=2;
+    hand.solverResult=null;
+    hand.solverJob=null;
+    hand.solverStatus='';
     hand.solverError='';
     save();
   }catch(error){
@@ -681,6 +726,8 @@ async function inspectHandForSolver(id,force=false){
 function collectSolverSpot(){
   const hand=solverHand(); if(!hand?.solverSpot)return null;
   const spot=structuredClone(hand.solverSpot);
+  if(!spot.observedHeroAction)spot.observedHeroAction='unknown';
+  if(!Number.isFinite(Number(spot.observedHeroAmountBb)))spot.observedHeroAmountBb=0;
   document.querySelectorAll('[data-solver-field]').forEach(el=>{
     const key=el.dataset.solverField;
     let value=el.value;
