@@ -699,8 +699,7 @@ function solverMissing(spot){
   if(!spot)return ['Hand details'];
   const missing=[];
   if(spot.game!=='NLH')missing.push('No-limit Hold’em');
-  if(!(Number(spot.tableSize)>=2))missing.push('Table size');
-  else if(Number(spot.tableSize)!==6)missing.push('Current solver provider supports 6-max NLH');
+  if(!(Number(spot.tableSize)>=3&&Number(spot.tableSize)<=6))missing.push('Current solver provider supports 3–6 handed NLH');
   if(!spot.heroPosition)missing.push('Hero position');
   if(!spot.decisionStreet||spot.decisionStreet==='unknown')missing.push('Decision street');
   if(!Array.isArray(spot.heroCards)||spot.heroCards.length!==2)missing.push('Hero cards');
@@ -724,7 +723,7 @@ function solverSelect(label,key,value,options){
 async function inspectHandForSolver(id,force=false){
   const hand=findHandRecord(id); if(!hand)return;
   solverReviewHandId=id;
-  if(hand.solverSpot&&hand.solverSpotVersion>=3&&!force){ navigate('solverReview'); return; }
+  if(hand.solverSpot&&hand.solverSpotVersion>=4&&!force){ navigate('solverReview'); return; }
   route='solverReview'; solverInspectingHandId=id; solverDebugAdd(hand,'inspect:start',{force,spotVersion:hand.solverSpotVersion||0}); render();
   try{
     const imageDataUrl=await getHandImage(hand.imageKey);
@@ -741,7 +740,7 @@ async function inspectHandForSolver(id,force=false){
     solverDebugAdd(hand,'inspect:http',{status:res.status,ok:res.ok,debug:json.debug||null,error:json.error||'',message:json.message||''});
     if(!res.ok)throw new Error(json.message||json.error||'Could not read the hand for solving.');
     hand.solverSpot=json.spot;
-    hand.solverSpotVersion=3;
+    hand.solverSpotVersion=4;
     hand.solverResult=null;
     hand.solverJob=null;
     hand.solverStatus='';
