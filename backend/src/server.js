@@ -1120,4 +1120,14 @@ app.post("/solver/poll", async (req,res)=>{
 
 
 const port = Number(process.env.PORT || 3000);
-app.listen(port,()=>console.log(`Inner Game hand analysis API listening on ${port}`));
+if(process.env.NODE_ENV!=="test"){
+  app.listen(port,()=>console.log(`Inner Game hand analysis API listening on ${port}`));
+}
+
+export {
+  expectedPostflopSegments,
+  pokeraiPreflopActions,
+  preflopRangeReadinessIssues,
+  reconstructSolverMath,
+  solverSpotInputSchema
+};
