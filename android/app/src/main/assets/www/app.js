@@ -916,8 +916,10 @@ async function pollSolverJob(id){
         });
         json=await res.json().catch(()=>({}));
         consecutiveNetworkErrors=0;
+        solverDebugAdd(current,'poll:http',{attempt:attempt+1,status:res.status,ok:res.ok,spotStatus:json.spotStatus||'',debug:json.debug||null,error:json.error||'',message:json.message||''});
       }catch(error){
         consecutiveNetworkErrors++;
+        solverDebugAdd(current,'poll:fetch_error',{attempt:attempt+1,consecutiveNetworkErrors,message:String(error?.message||error),stack:String(error?.stack||'')});
         current.solverStatus='pending';
         current.solverError='';
         save();
@@ -932,14 +934,14 @@ async function pollSolverJob(id){
         continue;
       }
       if(!res.ok)throw new Error(json.message||json.error||'Solver failed.');
-      current.solverResult=json.solution;current.solverJob=null;current.solverStatus='solved';current.solverError='';save();
+      current.solverResult=json.solution;current.solverJob=null;current.solverStatus='solved';current.solverError='';solverDebugAdd(current,'poll:complete',{debug:json.debug||null});save();
       if(route==='solverResult'&&solverReviewHandId===id)render();
       captureToast('GTO solution ready ✓');
       return;
     }
   }catch(error){
     const current=findHandRecord(id);
-    if(current){current.solverStatus='failed';current.solverError=String(error?.message||error);save();}
+    if(current){current.solverStatus='failed';current.solverError=String(error?.message||error);solverDebugAdd(current,'poll:error',{message:String(error?.message||error),stack:String(error?.stack||'')});save();}
     if(route==='solverResult'&&solverReviewHandId===id)render();
   }finally{solverPolling.delete(id);}
 }
