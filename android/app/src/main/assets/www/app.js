@@ -645,7 +645,7 @@ function solverLocalHistoryIssues(spot){
       if(a.action==='check'){
         if(outstanding){issues.push(street+': check while facing a bet');break;}
         checks++;if(checks>=2)terminal=true;
-      }else if(a.action==='bet'){
+      }else if(a.action==='bet'||a.action==='donk_bet'){
         if(outstanding){issues.push(street+': bet while a bet is already outstanding');break;}
         outstanding=true;checks=0;
       }else if(a.action==='raise'||a.action==='allin'){
@@ -837,14 +837,26 @@ async function runSolverForHand(id){
   if(missing.length){h.solverError='Complete the highlighted hand details first.';save();render();return;}
   h.solverError='';h.solverStatus='starting';save();route='solverResult';render();
   try{
-    const res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/solve',{
-      method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({spot})
-    });
-    const json=await res.json().catch(()=>({}));
+    let res=null,json={},lastError=null;
+    for(let attempt=0;attempt<4;attempt++){
+      try{
+        res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/solve',{
+          method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({spot})
+        });
+        json=await res.json().catch(()=>({}));
+        if(res.ok||res.status===202)break;
+        if(res.status<500)break;
+        lastError=new Error(json.message||json.error||('HTTP '+res.status));
+      }catch(error){
+        lastError=error;
+      }
+      if(attempt<3)await new Promise(resolve=>setTimeout(resolve,700*(attempt+1)));
+    }
+    if(!res)throw lastError||new Error('Network unavailable. Your hand is still saved.');
     if(res.status===202&&json.job){
       h.solverJob=json.job;h.solverStatus='pending';save();render();pollSolverJob(id);return;
     }
-    if(!res.ok)throw new Error(json.message||json.error||'Solver request failed.');
+    if(!res.ok)throw new Error(json.message||json.error||lastError?.message||'Solver request failed.');
     h.solverResult=json.solution;h.solverJob=null;h.solverStatus='solved';save();render();
   }catch(error){
     h.solverStatus='failed';h.solverError=String(error?.message||error);save();render();
@@ -854,14 +866,32 @@ async function pollSolverJob(id){
   if(solverPolling.has(id))return;
   const h=findHandRecord(id);if(!h?.solverJob)return;
   solverPolling.add(id);
+  let consecutiveNetworkErrors=0;
   try{
-    for(let attempt=0;attempt<80;attempt++){
+    for(let attempt=0;attempt<100;attempt++){
       const current=findHandRecord(id);if(!current?.solverJob)break;
-      const res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/poll',{
-        method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({job:current.solverJob})
-      });
-      const json=await res.json().catch(()=>({}));
+      let res,json;
+      try{
+        res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/poll',{
+          method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({job:current.solverJob})
+        });
+        json=await res.json().catch(()=>({}));
+        consecutiveNetworkErrors=0;
+      }catch(error){
+        consecutiveNetworkErrors++;
+        current.solverStatus='pending';
+        current.solverError='';
+        save();
+        if(route==='solverResult'&&solverReviewHandId===id)render();
+        if(consecutiveNetworkErrors>=12)return;
+        await new Promise(resolve=>setTimeout(resolve,Math.min(8000,1500*consecutiveNetworkErrors)));
+        continue;
+      }
       if(res.status===202){ await new Promise(resolve=>setTimeout(resolve,2200)); continue; }
+      if(res.status>=500){
+        await new Promise(resolve=>setTimeout(resolve,2500));
+        continue;
+      }
       if(!res.ok)throw new Error(json.message||json.error||'Solver failed.');
       current.solverResult=json.solution;current.solverJob=null;current.solverStatus='solved';current.solverError='';save();
       if(route==='solverResult'&&solverReviewHandId===id)render();
