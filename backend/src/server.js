@@ -187,6 +187,7 @@ function cleanTournamentText(value=""){
     .trim();
 }
 function sleep(ms){ return new Promise(resolve=>setTimeout(resolve,ms)); }
+function solverDebugId(){ return "sv_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
 function pokeraiHeaders(){
   return {
     Authorization:`Bearer ${POKERAI_KEY}`,
@@ -564,9 +565,21 @@ async function extractSolverSpot(imageDataUrl,hand={},repairContext=null){
     text:{format:{type:"json_schema",name:"solver_spot_inspection",strict:true,schema:solverInspectJsonSchema}}
   });
   const raw=solverSpotSchema.parse(JSON.parse(response.output_text));
+  const rawSpot=JSON.parse(JSON.stringify(raw));
   const spot=normalizeSolverSpot(raw);
   const reconstructed=reconstructSolverMath(spot);
-  return reconstructed.spot;
+  return {
+    spot:reconstructed.spot,
+    debug:{
+      model:SOLVER_INSPECT_MODEL,
+      rawSpot,
+      reconstruction:{
+        issues:reconstructed.issues,
+        streetSnapshots:reconstructed.streetSnapshots,
+        finalPotFromActions:reconstructed.finalPotFromActions
+      }
+    }
+  };
 }
 function solverReadiness(spot){
   const missing=[];
@@ -755,38 +768,62 @@ app.post("/analyze-hand", async (req,res)=>{
 
 app.post("/solver/inspect", async (req,res)=>{
   const startedAt=Date.now();
+  const requestId=solverDebugId();
   try{
     const {imageDataUrl,hand={}}=req.body||{};
-    if(typeof imageDataUrl!=="string"||!imageDataUrl.startsWith("data:image/"))return res.status(400).json({error:"imageDataUrl is required"});
-    let spot=await extractSolverSpot(imageDataUrl,hand);
+    if(typeof imageDataUrl!=="string"||!imageDataUrl.startsWith("data:image/"))return res.status(400).json({error:"imageDataUrl is required",debug:{requestId,stage:"validate_input"}});
+    const first=await extractSolverSpot(imageDataUrl,hand);
+    let spot=first.spot;
+    let chosenDebug=first.debug;
     let issues=solverActionHistoryIssues(spot);
     const heroLooksSuspicious=(hand?.heroCards||[]).length===2 && spot.heroCards.join(" ").toLowerCase()===((hand.heroCards||[]).join(" ").toLowerCase()) && issues.length>0;
     const firstMissing=solverReadiness({...spot,missingFields:spot.missingFields||[]});
+    let repairDebug=null;
     if(issues.length || firstMissing.length || heroLooksSuspicious){
       try{
         const repaired=await extractSolverSpot(imageDataUrl,hand,{issues,missing:firstMissing,previousSpot:spot});
-        const repairedMissing=solverReadiness({...repaired,missingFields:repaired.missingFields||[]});
-        if(repairedMissing.length<firstMissing.length || (repairedMissing.length===firstMissing.length && solverActionHistoryIssues(repaired).length<=issues.length))spot=repaired;
+        repairDebug=repaired.debug;
+        const repairedMissing=solverReadiness({...repaired.spot,missingFields:repaired.spot.missingFields||[]});
+        if(repairedMissing.length<firstMissing.length || (repairedMissing.length===firstMissing.length && solverActionHistoryIssues(repaired.spot).length<=issues.length)){
+          spot=repaired.spot;
+          chosenDebug=repaired.debug;
+        }
       }catch(error){
-        console.warn(JSON.stringify({event:"solver_spot_repair_failed",error:String(error?.message||error)}));
+        repairDebug={error:String(error?.message||error)};
       }
     }
     spot.missingFields=solverReadiness({...spot,missingFields:spot.missingFields||[]});
-    console.log(JSON.stringify({event:"solver_spot_inspected",ms:Date.now()-startedAt,model:SOLVER_INSPECT_MODEL,ready:spot.missingFields.length===0,street:spot.decisionStreet,hero:spot.heroPosition,heroCards:spot.heroCards,flopStack:spot.flopStartEffectiveStackBb,potAtDecision:spot.potAtDecisionBb,missing:spot.missingFields.length}));
-    return res.json({spot,ready:spot.missingFields.length===0});
+    const debug={
+      requestId,
+      stage:"inspect_complete",
+      model:SOLVER_INSPECT_MODEL,
+      durationMs:Date.now()-startedAt,
+      firstPass:first.debug,
+      repairPass:repairDebug,
+      chosen:{
+        spot,
+        historyIssues:solverActionHistoryIssues(spot),
+        missingFields:spot.missingFields
+      }
+    };
+    console.log(JSON.stringify({event:"solver_spot_inspected",requestId,ms:Date.now()-startedAt,model:SOLVER_INSPECT_MODEL,ready:spot.missingFields.length===0,street:spot.decisionStreet,hero:spot.heroPosition,heroCards:spot.heroCards,flopStack:spot.flopStartEffectiveStackBb,potAtDecision:spot.potAtDecisionBb,missing:spot.missingFields.length}));
+    return res.json({spot,ready:spot.missingFields.length===0,debug});
   }catch(error){
-    console.error(JSON.stringify({event:"solver_spot_inspect_failed",ms:Date.now()-startedAt,error:String(error?.message||error)}));
-    return res.status(500).json({error:"Could not prepare this hand for the solver"});
+    console.error(JSON.stringify({event:"solver_spot_inspect_failed",requestId,ms:Date.now()-startedAt,error:String(error?.message||error)}));
+    return res.status(500).json({error:"Could not prepare this hand for the solver",message:String(error?.message||error),debug:{requestId,stage:"inspect_exception",durationMs:Date.now()-startedAt,error:String(error?.stack||error)}});
   }
 });
-
 app.post("/solver/solve", async (req,res)=>{
   const startedAt=Date.now();
+  const requestId=solverDebugId();
+  let stage="start";
   try{
-    if(!POKERAI_KEY)return res.status(503).json({error:"solver_not_configured",message:"Pokerai API key is not configured yet."});
+    if(!POKERAI_KEY)return res.status(503).json({error:"solver_not_configured",message:"Pokerai API key is not configured yet.",debug:{requestId,stage:"provider_config"}});
+    stage="parse_spot";
     const spot=normalizeSolverSpot(solverSpotSchema.parse(req.body?.spot||{}));
     const missing=solverReadiness(spot);
-    if(missing.length)return res.status(422).json({error:"incomplete_hand",message:"Complete the missing hand details before solving.",missingFields:missing});
+    if(missing.length)return res.status(422).json({error:"incomplete_hand",message:"Complete the missing hand details before solving.",missingFields:missing,debug:{requestId,stage:"readiness",spot}});
+    stage="provider_prepare";
     if(spot.tableSize!==6)return res.status(422).json({error:"unsupported_format",message:"The configured Pokerai range seed currently supports 6-max NLH. The provider layer is ready for another format provider."});
 
     if(spot.decisionStreet==="preflop"){
@@ -804,6 +841,7 @@ app.post("/solver/solve", async (req,res)=>{
       return res.json({status:"solved",solution:{provider:"pokerai",street:"preflop",strategy,bestAction,evs:null,explanation,assumptions}});
     }
 
+    stage="derive_ranges";
     const [heroRangeInfo,villainRangeInfo]=await Promise.all([
       derivePlayerPreflopRange(spot,spot.heroPosition),
       derivePlayerPreflopRange(spot,spot.villainPosition)
@@ -812,6 +850,7 @@ app.post("/solver/solve", async (req,res)=>{
     const oopRange=heroIsOop?heroRangeInfo.range:villainRangeInfo.range;
     const ipRange=heroIsOop?villainRangeInfo.range:heroRangeInfo.range;
     const sizing=observedSizingConfig(spot);
+    stage="schedule_solver";
     const schedule=await pokeraiPost("/v1/gto/solver",{
       board:spot.board.slice(0,3).join(""),
       oop_range:oopRange,
@@ -834,9 +873,11 @@ app.post("/solver/solve", async (req,res)=>{
       "Observed bet sizes included in the custom tree",
       "Post-hand study only"
     ];
-    console.log(JSON.stringify({event:"solver_scheduled",ms:Date.now()-startedAt,street:spot.decisionStreet,solve:solve.slice(0,12)}));
+    const debug={requestId,stage:"scheduled",durationMs:Date.now()-startedAt,spot,heroIsOop,sizing,expectedSegments:expectedPostflopSegments(spot),heroRangeVersion:heroRangeInfo.version,villainRangeVersion:villainRangeInfo.version};
+    console.log(JSON.stringify({event:"solver_scheduled",requestId,ms:Date.now()-startedAt,street:spot.decisionStreet,solve:solve.slice(0,12)}));
     return res.status(202).json({
       status:"pending",
+      debug,
       job:{
         provider:"pokerai",
         solve,
@@ -847,31 +888,36 @@ app.post("/solver/solve", async (req,res)=>{
         expectedSegments:expectedPostflopSegments(spot),
         spot,
         assumptions,
-        createdAt:Date.now()
+        createdAt:Date.now(),
+        debugRequestId:requestId
       }
     });
   }catch(error){
-    console.error(JSON.stringify({event:"solver_schedule_failed",ms:Date.now()-startedAt,code:error?.code,error:String(error?.message||error)}));
-    return res.status(error?.status&&error.status<500?error.status:500).json({error:error?.code||"solver_failed",message:String(error?.message||"Solver failed")});
+    console.error(JSON.stringify({event:"solver_schedule_failed",requestId,stage,ms:Date.now()-startedAt,code:error?.code,error:String(error?.message||error)}));
+    return res.status(error?.status&&error.status<500?error.status:500).json({error:error?.code||"solver_failed",message:String(error?.message||"Solver failed"),debug:{requestId,stage,durationMs:Date.now()-startedAt,code:error?.code||"",status:error?.status||0,payload:error?.payload||null,stack:String(error?.stack||"")}});
   }
 });
 
 app.post("/solver/poll", async (req,res)=>{
   const startedAt=Date.now();
+  const requestId=solverDebugId();
+  let stage="start";
   try{
     if(!POKERAI_KEY)return res.status(503).json({error:"solver_not_configured",message:"Pokerai API key is not configured yet."});
     const job=req.body?.job||{};
     if(!job.solve)return res.status(400).json({error:"missing_job",message:"Missing solver job."});
+    stage="fetch_tree";
     const treeBody={solve:job.solve};
     if(job.decisionStreet==="turn"||job.decisionStreet==="river")treeBody.turn_card=job.turnCard;
     if(job.decisionStreet==="river")treeBody.river_card=job.riverCard;
     const tree=await pokeraiPost("/v1/gto/solver/tree",treeBody);
-    if(["available","computing"].includes(tree.spot_status))return res.status(202).json({status:"pending",spotStatus:tree.spot_status});
+    if(["available","computing"].includes(tree.spot_status))return res.status(202).json({status:"pending",spotStatus:tree.spot_status,debug:{requestId,stage:"tree_pending",durationMs:Date.now()-startedAt,spotStatus:tree.spot_status}});
     if(tree.spot_status!=="queryable")return res.status(422).json({error:"solver_not_queryable",message:`Solver state: ${tree.spot_status||"unknown"}`});
     const expected=Array.isArray(job.expectedSegments)?job.expectedSegments:[];
     const candidates=(tree.nodes||[]).filter(n=>n.is_hero);
     const scored=candidates.map(n=>({node:n,score:nodeMatchScore(n.node,expected)})).filter(x=>Number.isFinite(x.score)).sort((a,b)=>a.score-b.score);
     const target=scored[0]?.node;
+    stage="match_node";
     if(!target){
       console.warn(JSON.stringify({
         event:"solver_node_match_failed",
@@ -883,9 +929,11 @@ app.post("/solver/poll", async (req,res)=>{
         error:"action_path_not_in_tree",
         message:"The exact action path was not found in the solver tree. Inner Game will need to rebuild this solve.",
         expectedPath:expected,
-        availableHeroNodes:candidates.slice(0,12).map(n=>n.node)
+        availableHeroNodes:candidates.slice(0,12).map(n=>n.node),
+        debug:{requestId,stage:"node_match_failed",expected,candidateCount:candidates.length,availableHeroNodes:candidates.slice(0,20).map(n=>n.node)}
       });
     }
+    stage="fetch_node";
     const node=await pokeraiPost("/v1/gto/solver/node",{node:target.token,hole_cards:job.heroHand});
     const strategy=node.strategy||[];
     let evs=null;
@@ -911,13 +959,14 @@ app.post("/solver/poll", async (req,res)=>{
     };
     solution.explanation=await explainSolution({spot:job.spot,strategy,evs,bestAction,provider:"pokerai",assumptions:solution.assumptions});
     try{ await pokeraiPost("/v1/gto/solver/release",{solve:job.solve}); }catch{}
-    console.log(JSON.stringify({event:"solver_completed",ms:Date.now()-startedAt,street:job.decisionStreet,node:target.node,bestAction}));
-    return res.json({status:"solved",solution});
+    console.log(JSON.stringify({event:"solver_completed",requestId,ms:Date.now()-startedAt,street:job.decisionStreet,node:target.node,bestAction}));
+    return res.json({status:"solved",solution,debug:{requestId,stage:"complete",durationMs:Date.now()-startedAt,expected,targetNode:target.node,candidateCount:candidates.length,treeStatus:tree.spot_status}});
   }catch(error){
-    console.error(JSON.stringify({event:"solver_poll_failed",ms:Date.now()-startedAt,code:error?.code,error:String(error?.message||error)}));
+    console.error(JSON.stringify({event:"solver_poll_failed",requestId,stage,ms:Date.now()-startedAt,code:error?.code,error:String(error?.message||error)}));
     const status=error?.status===429?202:(error?.status&&error.status<500?error.status:500);
-    if(status===202)return res.status(202).json({status:"pending",message:String(error?.message||"Solver busy")});
-    return res.status(status).json({error:error?.code||"solver_failed",message:String(error?.message||"Solver failed")});
+    const debug={requestId,stage,durationMs:Date.now()-startedAt,code:error?.code||"",status:error?.status||0,payload:error?.payload||null,stack:String(error?.stack||"")};
+    if(status===202)return res.status(202).json({status:"pending",message:String(error?.message||"Solver busy"),debug});
+    return res.status(status).json({error:error?.code||"solver_failed",message:String(error?.message||"Solver failed"),debug});
   }
 });
 
