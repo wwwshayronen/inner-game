@@ -402,18 +402,14 @@ function actionSegment(action){
   return null;
 }
 function expectedPostflopSegments(spot){
-  const segments=[];
-  const board=(spot.board||[]).map(normalizeCard);
-  for(const street of ["flop","turn","river"]){
-    if(street==="turn" && board[3]) segments.push({type:"CARD",card:board[3]});
-    if(street==="river" && board[4]) segments.push({type:"CARD",card:board[4]});
-    for(const action of (spot.actionHistory||[]).filter(a=>a.street===street)){
-      const segment=actionSegment(action);
-      if(segment) segments.push(segment);
-    }
-    if(street===spot.decisionStreet) break;
-  }
-  return segments;
+  // /solver/tree returns the tree for the requested street. When turn_card /
+  // river_card are supplied, its node ids restart at "root" for that street;
+  // they do NOT contain the prior flop/turn action path. Match only actions
+  // that occurred on the decision street before Hero's decision.
+  return (spot.actionHistory||[])
+    .filter(a=>a.street===spot.decisionStreet)
+    .map(actionSegment)
+    .filter(Boolean);
 }
 function parseNodeSegments(node){
   return String(node||"").split("/").slice(1).map(raw=>{
@@ -667,9 +663,16 @@ app.post("/solver/poll", async (req,res)=>{
     const scored=candidates.map(n=>({node:n,score:nodeMatchScore(n.node,expected)})).filter(x=>Number.isFinite(x.score)).sort((a,b)=>a.score-b.score);
     const target=scored[0]?.node;
     if(!target){
+      console.warn(JSON.stringify({
+        event:"solver_node_match_failed",
+        street:job.decisionStreet,
+        expected,
+        availableHeroNodes:candidates.slice(0,20).map(n=>n.node)
+      }));
       return res.status(422).json({
         error:"action_path_not_in_tree",
-        message:"The exact action path was not found in the solver tree. Review the action sizes before solving.",
+        message:"The exact action path was not found in the solver tree. Inner Game will need to rebuild this solve.",
+        expectedPath:expected,
         availableHeroNodes:candidates.slice(0,12).map(n=>n.node)
       });
     }
