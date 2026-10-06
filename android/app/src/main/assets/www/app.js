@@ -725,7 +725,7 @@ async function inspectHandForSolver(id,force=false){
   const hand=findHandRecord(id); if(!hand)return;
   solverReviewHandId=id;
   if(hand.solverSpot&&hand.solverSpotVersion>=3&&!force){ navigate('solverReview'); return; }
-  route='solverReview'; solverInspectingHandId=id; render();
+  route='solverReview'; solverInspectingHandId=id; solverDebugAdd(hand,'inspect:start',{force,spotVersion:hand.solverSpotVersion||0}); render();
   try{
     const imageDataUrl=await getHandImage(hand.imageKey);
     if(!imageDataUrl)throw new Error('Screenshot image is missing.');
@@ -738,6 +738,7 @@ async function inspectHandForSolver(id,force=false){
       }})
     });
     const json=await res.json().catch(()=>({}));
+    solverDebugAdd(hand,'inspect:http',{status:res.status,ok:res.ok,debug:json.debug||null,error:json.error||'',message:json.message||''});
     if(!res.ok)throw new Error(json.message||json.error||'Could not read the hand for solving.');
     hand.solverSpot=json.spot;
     hand.solverSpotVersion=3;
@@ -748,6 +749,7 @@ async function inspectHandForSolver(id,force=false){
     save();
   }catch(error){
     hand.solverError=String(error?.message||error);
+    solverDebugAdd(hand,'inspect:error',{message:String(error?.message||error),stack:String(error?.stack||'')});
     save();
   }finally{
     solverInspectingHandId=null;
