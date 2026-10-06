@@ -83,6 +83,8 @@ const solverSpotSchema = z.object({
   flopStartPotBb:z.number(),
   flopStartEffectiveStackBb:z.number(),
   actionHistoryComplete:z.boolean(),
+  observedHeroAction:z.enum(["fold","check","call","bet","raise","allin","unknown"]),
+  observedHeroAmountBb:z.number(),
   actionHistory:z.array(solverActionSchema),
   missingFields:z.array(z.string()),
   extractionNotes:z.array(z.string())
@@ -91,7 +93,7 @@ const solverSpotSchema = z.object({
 const solverInspectJsonSchema = {
   type:"object",
   additionalProperties:false,
-  required:["confidence","game","format","tableSize","heroPosition","villainPosition","heroRole","heroCards","board","decisionStreet","effectiveStackBb","potAtDecisionBb","heroStackBb","villainStackBb","flopStartPotBb","flopStartEffectiveStackBb","actionHistoryComplete","actionHistory","missingFields","extractionNotes"],
+  required:["confidence","game","format","tableSize","heroPosition","villainPosition","heroRole","heroCards","board","decisionStreet","effectiveStackBb","potAtDecisionBb","heroStackBb","villainStackBb","flopStartPotBb","flopStartEffectiveStackBb","actionHistoryComplete","observedHeroAction","observedHeroAmountBb","actionHistory","missingFields","extractionNotes"],
   properties:{
     confidence:{type:"number",minimum:0,maximum:1},
     game:{type:"string",enum:["NLH","unknown"]},
@@ -110,6 +112,8 @@ const solverInspectJsonSchema = {
     flopStartPotBb:{type:"number"},
     flopStartEffectiveStackBb:{type:"number"},
     actionHistoryComplete:{type:"boolean"},
+    observedHeroAction:{type:"string",enum:["fold","check","call","bet","raise","allin","unknown"]},
+    observedHeroAmountBb:{type:"number"},
     actionHistory:{
       type:"array",
       items:{
@@ -242,6 +246,133 @@ async function derivePlayerPreflopRange(spot, position){
   if(!range) throw Object.assign(new Error(`No continuing range for ${position}`),{code:"empty_preflop_range"});
   return {range,version:body.preflop_version,chosenAction:chosen.action};
 }
+
+function ensureBlindPosts(spot){
+  const actions=Array.isArray(spot.actionHistory)?spot.actionHistory:[];
+  const pre=actions.filter(a=>a.street==="preflop");
+  const hasSb=pre.some(a=>a.action==="small_blind");
+  const hasBb=pre.some(a=>a.action==="big_blind");
+  if(!hasSb || !hasBb){
+    const posts=[];
+    if(!hasSb)posts.push({street:"preflop",position:"SB",action:"small_blind",amountBb:0.5,sizePctPot:0});
+    if(!hasBb)posts.push({street:"preflop",position:"BB",action:"big_blind",amountBb:1,sizePctPot:0});
+    spot.actionHistory=[...posts,...actions];
+    spot.extractionNotes=[...(spot.extractionNotes||[]),"Standard SB/BB posts normalized in big-blind units for the solver."];
+  }
+  return spot;
+}
+function stripObservedHeroDecision(spot){
+  const action=String(spot.observedHeroAction||"unknown").toLowerCase();
+  if(action==="unknown"||!spot.heroPosition)return spot;
+  const rows=Array.isArray(spot.actionHistory)?spot.actionHistory:[];
+  for(let i=rows.length-1;i>=0;i--){
+    const a=rows[i];
+    if(a.street!==spot.decisionStreet)continue;
+    if(normalizePosition(a.position)===normalizePosition(spot.heroPosition) && a.action===action){
+      rows.splice(i,1);
+      spot.extractionNotes=[...(spot.extractionNotes||[]),"Hero's observed decision is stored separately and excluded from the solver action path."];
+    }
+    break;
+  }
+  spot.actionHistory=rows;
+  return spot;
+}
+function solverActionHistoryIssues(spot){
+  const issues=[];
+  const rows=Array.isArray(spot.actionHistory)?spot.actionHistory:[];
+  const pre=rows.filter(a=>a.street==="preflop");
+  if(pre.length<2 || pre[0]?.action!=="small_blind" || normalizePosition(pre[0]?.position)!=="SB" || pre[1]?.action!=="big_blind" || normalizePosition(pre[1]?.position)!=="BB"){
+    issues.push("Action history must start with the small blind and big blind posts");
+  }
+  if(rows.some(a=>a.action==="unknown"))issues.push("Action history contains an unknown action");
+  const hero=normalizePosition(spot.heroPosition), villain=normalizePosition(spot.villainPosition);
+  for(const street of ["flop","turn","river"]){
+    const actions=rows.filter(a=>a.street===street);
+    if(!actions.length)continue;
+    let outstanding=false,terminal=false,lastActor="",checks=0;
+    for(const a of actions){
+      const actor=normalizePosition(a.position);
+      if(hero&&villain&&actor!==hero&&actor!==villain){
+        issues.push(`${street}: action assigned to ${actor||"an unknown player"} after the hand should be heads-up`);
+        break;
+      }
+      if(terminal){
+        issues.push(`${street}: action appears after the betting round already ended`);
+        break;
+      }
+      if(lastActor&&actor===lastActor){
+        issues.push(`${street}: the same player acts twice in a row`);
+        break;
+      }
+      if(a.action==="check"){
+        if(outstanding){issues.push(`${street}: check appears while facing a bet`);break;}
+        checks+=1;
+        if(checks>=2)terminal=true;
+      }else if(a.action==="bet"){
+        if(outstanding){issues.push(`${street}: bet appears while a bet is already outstanding`);break;}
+        outstanding=true;checks=0;
+      }else if(["raise","allin"].includes(a.action)){
+        if(!outstanding){issues.push(`${street}: raise appears without a prior bet`);break;}
+        outstanding=true;checks=0;
+      }else if(a.action==="call"){
+        if(!outstanding){issues.push(`${street}: call appears without a bet to call`);break;}
+        outstanding=false;terminal=true;checks=0;
+      }else if(a.action==="fold"){
+        if(!outstanding){issues.push(`${street}: fold appears without a bet to fold to`);break;}
+        terminal=true;checks=0;
+      }
+      lastActor=actor;
+    }
+    if(street!==spot.decisionStreet && actions.length && !terminal){
+      issues.push(`${street}: betting round is incomplete`);
+    }
+  }
+  return [...new Set(issues)];
+}
+function normalizeSolverSpot(spot){
+  spot.heroCards=validateCards(spot.heroCards).map(normalizeCard);
+  spot.board=validateCards(spot.board).map(normalizeCard);
+  spot.heroPosition=normalizePosition(spot.heroPosition);
+  spot.villainPosition=normalizePosition(spot.villainPosition);
+  spot.actionHistory=(spot.actionHistory||[]).map(a=>({...a,position:normalizePosition(a.position)}));
+  ensureBlindPosts(spot);
+  stripObservedHeroDecision(spot);
+  return spot;
+}
+async function extractSolverSpot(imageDataUrl,hand={},repairContext=null){
+  const prompt=[
+    "Prepare this saved poker screenshot for a post-hand GTO solver.",
+    "This is review/study after the hand, never real-time assistance.",
+    "The screenshot is the source of truth. Existing saved-hand metadata is only a hint.",
+    "CRITICAL HERO IDENTIFICATION: Hero is the user-controlled seat with the user's own hole cards, usually the bottom-center seat in poker clients/replayers. Do NOT use an opponent's cards shown later in a winner/showdown/result panel as Hero's cards.",
+    "In hand-history/replayer screenshots, colored/yellow action boxes without a player avatar/name often belong to Hero. Named/avatar action bubbles belong to the named opponent. Use the visual column/order to assign every action to the correct player.",
+    "If the hand result is already visible, identify Hero's actual decision (fold/call/bet/raise/check/all-in) in observedHeroAction, but EXCLUDE that Hero decision from actionHistory. actionHistory must end immediately before Hero's decision so the solver evaluates that decision.",
+    "We may solve ONLY if every action from blind posting/preflop through the exact Hero decision is known.",
+    "actionHistory MUST start with the blind posts in this exact logical order: SB small_blind 0.5 BB, then BB big_blind 1 BB. Keep them even if they seem obvious.",
+    "Never invent an action that is not visible or logically forced by visible information.",
+    "If any action, position, card, stack, or required sizing is missing or ambiguous, actionHistoryComplete MUST be false and missingFields must say exactly what the user needs to fix.",
+    "Include visible preflop folds needed to reconstruct the action path.",
+    "For bet/raise amountBb use the absolute wager/raise-to amount in big blinds on that street when it can be determined. For call, amountBb is the additional amount called when the client displays it; for checks/folds use 0.",
+    "For bet/raise sizePctPot use percentage of the pot immediately BEFORE that bet/raise. Do not compute percent-of-pot for blind posts, calls, checks or folds.",
+    "flopStartPotBb is the displayed/calculated pot entering the flop before flop betting. flopStartEffectiveStackBb is the effective stack behind entering the flop.",
+    "heroStackBb/villainStackBb are stacks behind at the screenshot decision when visible.",
+    "Use canonical positions SB, BB, UTG, MP, CO, BTN for 6-max. Identify the dealer/button marker and blind labels before assigning Hero's position.",
+    "heroRole is OOP or IP versus the remaining villain postflop.",
+    "Use compact cards such as As, Qh, 7d, Tc.",
+    "Sanity-check the sequence: after a fold there cannot be another action on that street; a call must face a bet/raise; postflop the same player cannot act twice consecutively.",
+    repairContext ? `A previous extraction failed validation. Re-read the IMAGE and correct it rather than preserving the bad parse. Validation feedback: ${JSON.stringify(repairContext)}` : "",
+    `Existing saved hand hint (may itself be wrong): ${JSON.stringify(hand)}`
+  ].filter(Boolean).join("\n");
+  const response=await client.responses.create({
+    model:MODEL,
+    input:[{role:"user",content:[
+      {type:"input_text",text:prompt},
+      {type:"input_image",image_url:imageDataUrl,detail:"high"}
+    ]}],
+    text:{format:{type:"json_schema",name:"solver_spot_inspection",strict:true,schema:solverInspectJsonSchema}}
+  });
+  return normalizeSolverSpot(solverSpotSchema.parse(JSON.parse(response.output_text)));
+}
 function solverReadiness(spot){
   const missing=[];
   if(spot.game!=="NLH") missing.push("No-limit Hold’em");
@@ -252,6 +383,7 @@ function solverReadiness(spot){
   const boardNeed=spot.decisionStreet==="flop"?3:spot.decisionStreet==="turn"?4:spot.decisionStreet==="river"?5:0;
   if(boardNeed && (spot.board||[]).length<boardNeed) missing.push("Board");
   if(!spot.actionHistoryComplete) missing.push("Complete action history from preflop to this decision");
+  missing.push(...solverActionHistoryIssues(spot));
   if(spot.decisionStreet!=="preflop"){
     if(!spot.villainPosition) missing.push("Villain position");
     if(!(spot.flopStartPotBb>0)) missing.push("Pot entering flop");
@@ -379,6 +511,7 @@ app.post("/analyze-hand", async (req,res)=>{
       "Analyze this poker screenshot for Inner Game.",
       "The screenshot is the source of truth. Session context is only a weak hint and must NEVER override visible screenshot text.",
       "Extract only information actually visible or strongly inferable from the screenshot. Do not invent hidden action.",
+      "Hero means the user's own seat/hole cards, usually the bottom-center seat. Never label an opponent's showdown/winner cards as heroCards.",
       "First read all visible event/tournament text on the table UI. Preserve the meaningful event name even when it is truncated.",
       "For tournamentName: use the tournament/event name visible in the screenshot, excluding temporary table-state suffixes such as '- 9th Place', blind countdowns, rank, prize jump, or player count.",
       "For visibleEventText: transcribe the visible event/title line as closely as possible.",
@@ -422,39 +555,16 @@ app.post("/solver/inspect", async (req,res)=>{
   try{
     const {imageDataUrl,hand={}}=req.body||{};
     if(typeof imageDataUrl!=="string"||!imageDataUrl.startsWith("data:image/"))return res.status(400).json({error:"imageDataUrl is required"});
-    const prompt=[
-      "Prepare this saved poker screenshot for a post-hand GTO solver.",
-      "This is review/study after the hand, never real-time assistance.",
-      "The screenshot is the source of truth. Existing saved-hand metadata is only a hint.",
-      "We may solve ONLY if every action from blind posting/preflop through the exact screenshot decision is known.",
-      "Never invent an action that is not visible or logically forced by visible information.",
-      "If any action, position, card, stack, or required sizing is missing or ambiguous, actionHistoryComplete MUST be false and missingFields must say exactly what the user needs to fix.",
-      "actionHistory contains actions BEFORE Hero's screenshot decision only. Do not add Hero's not-yet-taken decision.",
-      "Include preflop folds when visible/required to reconstruct the spot.",
-      "For bet/raise amountBb use the absolute wager/raise-to amount in big blinds on that street when it can be determined. For call, amountBb may be the matched wager; for checks/folds use 0.",
-      "For bet/raise sizePctPot use the standard percentage-of-pot sizing when it can be determined; otherwise 0 and add that sizing to missingFields.",
-      "flopStartPotBb is the pot entering the flop before flop betting. flopStartEffectiveStackBb is the effective stack behind entering the flop. Calculate them only when the visible complete action line makes that arithmetic reliable; otherwise 0 and mark missing.",
-      "heroStackBb/villainStackBb are stacks behind at the screenshot decision when visible.",
-      "Use canonical positions SB, BB, UTG, MP, CO, BTN for 6-max. For other table sizes, use the visible conventional labels.",
-      "heroRole is OOP or IP versus the remaining villain postflop.",
-      "Use compact cards such as As, Qh, 7d, Tc.",
-      `Existing saved hand hint: ${JSON.stringify(hand)}`
-    ].join("\n");
-    const response=await client.responses.create({
-      model:MODEL,
-      input:[{role:"user",content:[
-        {type:"input_text",text:prompt},
-        {type:"input_image",image_url:imageDataUrl,detail:"high"}
-      ]}],
-      text:{format:{type:"json_schema",name:"solver_spot_inspection",strict:true,schema:solverInspectJsonSchema}}
-    });
-    const spot=solverSpotSchema.parse(JSON.parse(response.output_text));
-    spot.heroCards=validateCards(spot.heroCards).map(normalizeCard);
-    spot.board=validateCards(spot.board).map(normalizeCard);
-    spot.heroPosition=normalizePosition(spot.heroPosition);
-    spot.villainPosition=normalizePosition(spot.villainPosition);
-    spot.actionHistory=spot.actionHistory.map(a=>({...a,position:normalizePosition(a.position)}));
-    spot.missingFields=solverReadiness(spot);
+    let spot=await extractSolverSpot(imageDataUrl,hand);
+    let issues=solverActionHistoryIssues(spot);
+    const heroLooksSuspicious=(hand?.heroCards||[]).length===2 && spot.heroCards.join(" ").toLowerCase()===((hand.heroCards||[]).join(" ").toLowerCase()) && issues.length>0;
+    if(issues.length || heroLooksSuspicious){
+      try{
+        const repaired=await extractSolverSpot(imageDataUrl,hand,{issues,previousSpot:spot});
+        if(solverActionHistoryIssues(repaired).length<=issues.length)spot=repaired;
+      }catch{}
+    }
+    spot.missingFields=solverReadiness({...spot,missingFields:[]});
     console.log(JSON.stringify({event:"solver_spot_inspected",ms:Date.now()-startedAt,ready:spot.missingFields.length===0,street:spot.decisionStreet,missing:spot.missingFields.length}));
     return res.json({spot,ready:spot.missingFields.length===0});
   }catch(error){
@@ -467,11 +577,7 @@ app.post("/solver/solve", async (req,res)=>{
   const startedAt=Date.now();
   try{
     if(!POKERAI_KEY)return res.status(503).json({error:"solver_not_configured",message:"Pokerai API key is not configured yet."});
-    const spot=solverSpotSchema.parse(req.body?.spot||{});
-    spot.heroCards=(spot.heroCards||[]).map(normalizeCard);
-    spot.board=(spot.board||[]).map(normalizeCard);
-    spot.heroPosition=normalizePosition(spot.heroPosition);
-    spot.villainPosition=normalizePosition(spot.villainPosition);
+    const spot=normalizeSolverSpot(solverSpotSchema.parse(req.body?.spot||{}));
     const missing=solverReadiness(spot);
     if(missing.length)return res.status(422).json({error:"incomplete_hand",message:"Complete the missing hand details before solving.",missingFields:missing});
     if(spot.tableSize!==6)return res.status(422).json({error:"unsupported_format",message:"The configured Pokerai range seed currently supports 6-max NLH. The provider layer is ready for another format provider."});
