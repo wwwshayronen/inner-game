@@ -693,7 +693,7 @@ function solverSelect(label,key,value,options){
 async function inspectHandForSolver(id,force=false){
   const hand=findHandRecord(id); if(!hand)return;
   solverReviewHandId=id;
-  if(hand.solverSpot&&hand.solverSpotVersion>=2&&!force){ navigate('solverReview'); return; }
+  if(hand.solverSpot&&hand.solverSpotVersion>=3&&!force){ navigate('solverReview'); return; }
   route='solverReview'; solverInspectingHandId=id; render();
   try{
     const imageDataUrl=await getHandImage(hand.imageKey);
@@ -709,7 +709,7 @@ async function inspectHandForSolver(id,force=false){
     const json=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(json.message||json.error||'Could not read the hand for solving.');
     hand.solverSpot=json.spot;
-    hand.solverSpotVersion=2;
+    hand.solverSpotVersion=3;
     hand.solverResult=null;
     hand.solverJob=null;
     hand.solverStatus='';
