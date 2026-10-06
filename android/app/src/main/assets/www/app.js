@@ -695,6 +695,18 @@ function solverLocalHistoryIssues(spot){
   }
   return [...new Set(issues)];
 }
+function solverLocalPreflopRangeIssues(spot){
+  if(!spot||spot.decisionStreet==='preflop')return [];
+  const rows=(Array.isArray(spot.actionHistory)?spot.actionHistory:[]).filter(a=>a.street==='preflop');
+  const issues=[];
+  for(const pos of [spot.heroPosition,spot.villainPosition].map(x=>String(x||'').toUpperCase()).filter(Boolean)){
+    const actions=rows.filter(a=>String(a.position||'').toUpperCase()===pos&&!['small_blind','big_blind'].includes(a.action));
+    const chosen=actions.at(-1);
+    if(!chosen)issues.push('Missing final preflop action for '+pos);
+    else if(!['call','raise','allin'].includes(chosen.action))issues.push('Unsupported final preflop action for '+pos+': '+chosen.action);
+  }
+  return issues;
+}
 function solverMissing(spot){
   if(!spot)return ['Hand details'];
   const missing=[];
@@ -707,6 +719,7 @@ function solverMissing(spot){
   if(need && (!Array.isArray(spot.board)||spot.board.length<need))missing.push('Board');
   if(!spot.actionHistoryComplete)missing.push('Complete action history from preflop to this decision');
   missing.push(...solverLocalHistoryIssues(spot));
+  missing.push(...solverLocalPreflopRangeIssues(spot));
   if(spot.decisionStreet!=='preflop'){
     if(!spot.villainPosition)missing.push('Villain position');
     if(!(Number(spot.flopStartPotBb)>0))missing.push('Pot entering flop');
@@ -723,7 +736,7 @@ function solverSelect(label,key,value,options){
 async function inspectHandForSolver(id,force=false){
   const hand=findHandRecord(id); if(!hand)return;
   solverReviewHandId=id;
-  if(hand.solverSpot&&hand.solverSpotVersion>=4&&!force){ navigate('solverReview'); return; }
+  if(hand.solverSpot&&hand.solverSpotVersion>=5&&!force){ navigate('solverReview'); return; }
   route='solverReview'; solverInspectingHandId=id; solverDebugAdd(hand,'inspect:start',{force,spotVersion:hand.solverSpotVersion||0}); render();
   try{
     const imageDataUrl=await getHandImage(hand.imageKey);
@@ -740,7 +753,7 @@ async function inspectHandForSolver(id,force=false){
     solverDebugAdd(hand,'inspect:http',{status:res.status,ok:res.ok,debug:json.debug||null,error:json.error||'',message:json.message||''});
     if(!res.ok)throw new Error(json.message||json.error||'Could not read the hand for solving.');
     hand.solverSpot=json.spot;
-    hand.solverSpotVersion=4;
+    hand.solverSpotVersion=5;
     hand.solverResult=null;
     hand.solverJob=null;
     hand.solverStatus='';
@@ -759,11 +772,14 @@ function collectSolverSpot(){
   const hand=solverHand(); if(!hand?.solverSpot)return null;
   const spot=structuredClone(hand.solverSpot);
   if(!spot.observedHeroAction)spot.observedHeroAction='unknown';
-  if(!Number.isFinite(Number(spot.observedHeroAmountBb)))spot.observedHeroAmountBb=0;
+  const numericKeys=['tableSize','effectiveStackBb','potAtDecisionBb','heroStackBb','villainStackBb','flopStartPotBb','flopStartEffectiveStackBb','observedHeroAmountBb','heroDisplayedStackBb','villainDisplayedStackBb','finalPotBb'];
+  numericKeys.forEach(key=>{spot[key]=Number(spot[key])||0;});
+  spot.streetStartPotsBb=spot.streetStartPotsBb||{};
+  ['preflop','flop','turn','river'].forEach(street=>{spot.streetStartPotsBb[street]=Number(spot.streetStartPotsBb[street])||0;});
   document.querySelectorAll('[data-solver-field]').forEach(el=>{
     const key=el.dataset.solverField;
     let value=el.value;
-    if(['tableSize','effectiveStackBb','potAtDecisionBb','heroStackBb','villainStackBb','flopStartPotBb','flopStartEffectiveStackBb'].includes(key))value=Number(value)||0;
+    if(numericKeys.includes(key))value=Number(value)||0;
     if(key==='heroCards'||key==='board')value=value.trim().split(/\s+/).filter(Boolean);
     spot[key]=value;
   });
@@ -894,7 +910,17 @@ async function runSolverForHand(id){
     if(res.status===202&&json.job){
       h.solverJob=json.job;h.solverStatus='pending';solverDebugAdd(h,'solve:scheduled',{debug:json.debug||null,job:{provider:json.job.provider,decisionStreet:json.job.decisionStreet,expectedSegments:json.job.expectedSegments,debugRequestId:json.job.debugRequestId}});save();render();pollSolverJob(id);return;
     }
-    if(!res.ok)throw new Error(json.message||json.error||lastError?.message||'Solver request failed.');
+    if(!res.ok){
+      if(res.status===422&&json.error==='invalid_spot'){
+        h.solverStatus='';h.solverJob=null;h.solverSpotVersion=0;h.solverError='Re-reading this screenshot because the saved solver data is stale or invalid.';save();render();
+        await inspectHandForSolver(id,true);
+        return;
+      }
+      if(res.status===422&&Array.isArray(json.missingFields)){
+        h.solverStatus='';h.solverJob=null;h.solverSpot.missingFields=json.missingFields;h.solverError=json.message||'Review the detected hand details.';save();route='solverReview';render();return;
+      }
+      throw new Error(json.message||json.error||lastError?.message||'Solver request failed.');
+    }
     h.solverResult=json.solution;h.solverJob=null;h.solverStatus='solved';save();render();
   }catch(error){
     h.solverStatus='failed';h.solverError=String(error?.message||error);solverDebugAdd(h,'solve:error',{message:String(error?.message||error),stack:String(error?.stack||'')});save();render();
@@ -932,7 +958,17 @@ async function pollSolverJob(id){
         await new Promise(resolve=>setTimeout(resolve,2500));
         continue;
       }
-      if(!res.ok)throw new Error(json.message||json.error||'Solver failed.');
+      if(!res.ok){
+        if(res.status===422&&json.error==='action_path_not_in_tree'){
+          current.solverJob=null;current.solverStatus='';current.solverSpotVersion=0;
+          current.solverError='The solver tree did not contain the detected action line. Re-reading the screenshot now.';
+          solverDebugAdd(current,'poll:reinspect',{reason:json.error,expectedPath:json.expectedPath||[],availableHeroNodes:json.availableHeroNodes||[],debug:json.debug||null});
+          save();
+          await inspectHandForSolver(id,true);
+          return;
+        }
+        throw new Error(json.message||json.error||'Solver failed.');
+      }
       current.solverResult=json.solution;current.solverJob=null;current.solverStatus='solved';current.solverError='';solverDebugAdd(current,'poll:complete',{debug:json.debug||null});save();
       if(route==='solverResult'&&solverReviewHandId===id)render();
       captureToast('GTO solution ready ✓');
