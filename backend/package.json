@@ -3,7 +3,7 @@
   "version":"1.0.0",
   "type":"module",
   "private":true,
-  "scripts":{"start":"node src/server.js","check":"node --check src/server.js"},
+  "scripts":{"start":"node src/server.js","check":"node --check src/server.js && node --test test/*.test.js"},
   "dependencies":{
     "cors":"^2.8.5",
     "express":"^5.1.0",

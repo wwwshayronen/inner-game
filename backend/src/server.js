@@ -10,6 +10,7 @@ app.use(express.json({ limit: "18mb" }));
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 const SOLVER_INSPECT_MODEL = process.env.SOLVER_INSPECT_MODEL || "gpt-5.6-sol";
+const SOLVER_INSPECT_REASONING = process.env.SOLVER_INSPECT_REASONING || "medium";
 const POKERAI_BASE = process.env.POKERAI_API_BASE || "https://pokerai.bet";
 const POKERAI_KEY = process.env.POKERAI_API_KEY || "";
 
@@ -99,6 +100,32 @@ const solverSpotSchema = z.object({
   actionHistory:z.array(solverActionSchema),
   missingFields:z.array(z.string()),
   extractionNotes:z.array(z.string())
+});
+
+const solverActionInputSchema = solverActionSchema.extend({
+  amountBb:z.coerce.number(),
+  sizePctPot:z.coerce.number()
+});
+const solverSpotInputSchema = solverSpotSchema.extend({
+  confidence:z.coerce.number(),
+  tableSize:z.coerce.number().int(),
+  effectiveStackBb:z.coerce.number(),
+  potAtDecisionBb:z.coerce.number(),
+  heroStackBb:z.coerce.number(),
+  villainStackBb:z.coerce.number(),
+  flopStartPotBb:z.coerce.number(),
+  flopStartEffectiveStackBb:z.coerce.number(),
+  observedHeroAmountBb:z.coerce.number(),
+  heroDisplayedStackBb:z.coerce.number(),
+  villainDisplayedStackBb:z.coerce.number(),
+  finalPotBb:z.coerce.number(),
+  streetStartPotsBb:z.object({
+    preflop:z.coerce.number(),
+    flop:z.coerce.number(),
+    turn:z.coerce.number(),
+    river:z.coerce.number()
+  }),
+  actionHistory:z.array(solverActionInputSchema)
 });
 
 const solverInspectJsonSchema = {
@@ -249,20 +276,44 @@ function actionKey(action){
   if(a==="fold") return "fold";
   return a;
 }
-function pokeraiPreflopAction(a){
-  const actionMap={
-    small_blind:"small blind",
-    big_blind:"big blind",
-    fold:"fold",
-    call:"call",
-    raise:"raise",
-    allin:"raise"
-  };
-  const mapped=actionMap[a.action];
-  if(!mapped) return null;
-  const out={position:normalizePosition(a.position),action:mapped};
-  if(a.action!=="fold") out.amount=Math.max(0,Number(a.amountBb)||0);
-  if(a.action==="allin") out.allin=true;
+function pokeraiPreflopActions(actions=[]){
+  const invested={};
+  const out=[];
+  for(const source of actions||[]){
+    const position=normalizePosition(source.position);
+    const rawAction=String(source.action||"").toLowerCase();
+    const normalizedAction=(rawAction==="bet"||rawAction==="donk_bet")?"raise":rawAction;
+    const actionMap={
+      small_blind:"small blind",
+      big_blind:"big blind",
+      fold:"fold",
+      call:"call",
+      raise:"raise",
+      allin:"raise"
+    };
+    const mapped=actionMap[normalizedAction];
+    if(!mapped||!position)continue;
+    const row={position,action:mapped};
+    if(mapped!=="fold"){
+      const before=Number(invested[position]||0);
+      const highest=Math.max(0,...Object.values(invested).map(Number));
+      const rawAmount=Math.max(0,Number(source.amountBb)||0);
+      let added=0;
+      if(normalizedAction==="call"){
+        // Internal hand history stores calls as the additional chips called.
+        // A zero amount is reconstructed from the outstanding wager.
+        added=rawAmount>0?rawAmount:Math.max(0,highest-before);
+      }else{
+        // Internal raises are stored as raise-to totals. PokerAI expects the
+        // incremental amount newly invested by this action.
+        added=Math.max(0,rawAmount-before);
+      }
+      row.amount=roundBb(added);
+      invested[position]=roundBb(before+added);
+    }
+    if(normalizedAction==="allin")row.allin=true;
+    out.push(row);
+  }
   return out;
 }
 function rangeStringFromGrid(range, chosenAction){
@@ -277,10 +328,10 @@ async function derivePlayerPreflopRange(spot, position){
   const pre=(spot.actionHistory||[]).filter(a=>a.street==="preflop");
   let lastIndex=-1;
   for(let i=0;i<pre.length;i++) if(normalizePosition(pre[i].position)===normalizePosition(position) && !["small_blind","big_blind"].includes(pre[i].action)) lastIndex=i;
-  if(lastIndex<0) throw Object.assign(new Error(`Missing final preflop action for ${position}`),{code:"missing_preflop_range_action"});
+  if(lastIndex<0) throw Object.assign(new Error(`Missing final preflop action for ${position}`),{code:"missing_preflop_range_action",status:422});
   const chosen=pre[lastIndex];
-  if(!["fold","call","raise","allin"].includes(chosen.action)) throw Object.assign(new Error(`Unsupported preflop action for ${position}`),{code:"unsupported_preflop_range_action"});
-  const prior=pre.slice(0,lastIndex).map(pokeraiPreflopAction).filter(Boolean);
+  if(!["fold","call","raise","allin"].includes(chosen.action)) throw Object.assign(new Error(`Unsupported preflop action for ${position}`),{code:"unsupported_preflop_range_action",status:422});
+  const prior=pokeraiPreflopActions(pre.slice(0,lastIndex));
   const body={
     table_size:"6max",
     positions:{hero:normalizePosition(position)},
@@ -610,14 +661,28 @@ async function extractSolverSpot(imageDataUrl,hand={},repairContext=null){
   ].filter(Boolean).join("\n");
   const response=await client.responses.create({
     model:SOLVER_INSPECT_MODEL,
-    reasoning:{effort:"high"},
+    reasoning:{effort:SOLVER_INSPECT_REASONING},
     input:[{role:"user",content:[
       {type:"input_text",text:prompt},
-      {type:"input_image",image_url:imageDataUrl,detail:"original"}
+      {type:"input_image",image_url:imageDataUrl,detail:"high"}
     ]}],
     text:{format:{type:"json_schema",name:"solver_spot_inspection",strict:true,schema:solverInspectJsonSchema}}
   });
-  const raw=solverSpotSchema.parse(JSON.parse(response.output_text));
+  let decoded;
+  try{
+    if(!response.output_text||!String(response.output_text).trim())throw new Error("empty model output");
+    decoded=JSON.parse(response.output_text);
+  }catch(error){
+    throw Object.assign(new Error(`Solver extraction returned invalid JSON: ${String(error?.message||error)}`),{code:"solver_extract_invalid_json",status:502});
+  }
+  const parsed=solverSpotSchema.safeParse(decoded);
+  if(!parsed.success){
+    throw Object.assign(new Error("Solver extraction returned an invalid hand shape."),{
+      code:"solver_extract_invalid_shape",status:502,
+      validation:parsed.error.issues.map(issue=>({path:issue.path.join("."),message:issue.message}))
+    });
+  }
+  const raw=parsed.data;
   const rawSpot=JSON.parse(JSON.stringify(raw));
   const spot=normalizeSolverSpot(raw);
   const reconstructed=reconstructSolverMath(spot);
@@ -637,6 +702,23 @@ async function extractSolverSpot(imageDataUrl,hand={},repairContext=null){
     }
   };
 }
+function preflopRangeReadinessIssues(spot){
+  if(spot.decisionStreet==="preflop")return [];
+  const rows=(spot.actionHistory||[]).filter(a=>a.street==="preflop");
+  const issues=[];
+  for(const position of [spot.heroPosition,spot.villainPosition].map(normalizePosition).filter(Boolean)){
+    const actions=rows.filter(a=>normalizePosition(a.position)===position&&!["small_blind","big_blind"].includes(a.action));
+    const chosen=actions.at(-1);
+    if(!chosen){
+      issues.push(`Missing final preflop action for ${position}`);
+      continue;
+    }
+    if(!["call","raise","allin"].includes(chosen.action)){
+      issues.push(`Unsupported final preflop action for ${position}: ${chosen.action}`);
+    }
+  }
+  return issues;
+}
 function solverReadiness(spot){
   const missing=[];
   if(spot.game!=="NLH") missing.push("No-limit Hold’em");
@@ -648,6 +730,7 @@ function solverReadiness(spot){
   if(boardNeed && (spot.board||[]).length<boardNeed) missing.push("Board");
   if(!spot.actionHistoryComplete) missing.push("Complete action history from preflop to this decision");
   missing.push(...solverActionHistoryIssues(spot));
+  missing.push(...preflopRangeReadinessIssues(spot));
   if(spot.decisionStreet!=="preflop"){
     if(!spot.villainPosition) missing.push("Villain position");
     if(!(spot.flopStartPotBb>0)) missing.push("Pot entering flop");
@@ -655,11 +738,12 @@ function solverReadiness(spot){
   }
   return [...new Set([...(spot.missingFields||[]),...missing])];
 }
-function actionSegment(action){
+function actionSegment(action,facingBet=false){
   if(action.action==="check")return {type:"CHECK"};
   if(action.action==="call")return {type:"CALL"};
   if(action.action==="bet"||action.action==="donk_bet")return {type:"BET",amount:Number(action.amountBb)||0};
-  if(["raise","allin"].includes(action.action))return {type:"RAISE",amount:Number(action.amountBb)||0};
+  if(action.action==="raise")return {type:"RAISE",amount:Number(action.amountBb)||0};
+  if(action.action==="allin")return {type:facingBet?"RAISE":"BET",amount:Number(action.amountBb)||0};
   if(action.action==="fold")return {type:"FOLD"};
   return null;
 }
@@ -670,9 +754,12 @@ function expectedPostflopSegments(spot){
   const segments=[];
   const board=(spot.board||[]).map(normalizeCard);
   for(const street of ["flop","turn","river"]){
+    let facingBet=false;
     for(const action of (spot.actionHistory||[]).filter(a=>a.street===street)){
-      const segment=actionSegment(action);
+      const segment=actionSegment(action,facingBet);
       if(segment)segments.push(segment);
+      if(["bet","donk_bet","raise","allin"].includes(action.action))facingBet=true;
+      if(["call","fold"].includes(action.action))facingBet=false;
     }
     if(street==="flop" && board[3])segments.push({type:"CARD",card:board[3]});
     if(street==="turn" && board[4])segments.push({type:"CARD",card:board[4]});
@@ -710,8 +797,16 @@ function nodeMatchScore(node, expected){
 function observedSizingConfig(spot){
   const bet_sizes={},raise_sizes={},donk_sizes={};
   for(const street of ["flop","turn","river"]){
-    const bets=(spot.actionHistory||[]).filter(a=>a.street===street&&["bet","donk_bet"].includes(a.action)&&a.sizePctPot>0).map(a=>Math.round(a.sizePctPot));
-    const raises=(spot.actionHistory||[]).filter(a=>a.street===street&&["raise","allin"].includes(a.action)&&a.sizePctPot>0).map(a=>Math.round(a.sizePctPot));
+    const bets=[],raises=[];
+    let facingBet=false;
+    for(const action of (spot.actionHistory||[]).filter(a=>a.street===street)){
+      if(action.sizePctPot>0){
+        if(action.action==="bet"||action.action==="donk_bet"||(action.action==="allin"&&!facingBet))bets.push(Math.round(action.sizePctPot));
+        if(action.action==="raise"||(action.action==="allin"&&facingBet))raises.push(Math.round(action.sizePctPot));
+      }
+      if(["bet","donk_bet","raise","allin"].includes(action.action))facingBet=true;
+      if(["call","fold"].includes(action.action))facingBet=false;
+    }
     const baseBets=[33,67,100,...bets];
     bet_sizes[street]=[...new Set(baseBets)].filter(x=>x>=5&&x<=300).slice(0,6);
     // A lead from OOP on a later street after calling the previous street is a
@@ -828,26 +923,11 @@ app.post("/solver/inspect", async (req,res)=>{
   try{
     const {imageDataUrl,hand={}}=req.body||{};
     if(typeof imageDataUrl!=="string"||!imageDataUrl.startsWith("data:image/"))return res.status(400).json({error:"imageDataUrl is required",debug:{requestId,stage:"validate_input"}});
+    // Keep one model pass per HTTP request. The previous automatic second pass
+    // routinely pushed difficult screenshots beyond the mobile/proxy request
+    // window. The existing "Try again" action provides an explicit second read.
     const first=await extractSolverSpot(imageDataUrl,hand);
-    let spot=first.spot;
-    let chosenDebug=first.debug;
-    let issues=solverActionHistoryIssues(spot);
-    const heroLooksSuspicious=(hand?.heroCards||[]).length===2 && spot.heroCards.join(" ").toLowerCase()===((hand.heroCards||[]).join(" ").toLowerCase()) && issues.length>0;
-    const firstMissing=solverReadiness({...spot,missingFields:spot.missingFields||[]});
-    let repairDebug=null;
-    if(issues.length || firstMissing.length || heroLooksSuspicious){
-      try{
-        const repaired=await extractSolverSpot(imageDataUrl,hand,{issues,missing:firstMissing,previousSpot:spot});
-        repairDebug=repaired.debug;
-        const repairedMissing=solverReadiness({...repaired.spot,missingFields:repaired.spot.missingFields||[]});
-        if(repairedMissing.length<firstMissing.length || (repairedMissing.length===firstMissing.length && solverActionHistoryIssues(repaired.spot).length<=issues.length)){
-          spot=repaired.spot;
-          chosenDebug=repaired.debug;
-        }
-      }catch(error){
-        repairDebug={error:String(error?.message||error)};
-      }
-    }
+    const spot=first.spot;
     spot.missingFields=solverReadiness({...spot,missingFields:spot.missingFields||[]});
     const debug={
       requestId,
@@ -855,7 +935,8 @@ app.post("/solver/inspect", async (req,res)=>{
       model:SOLVER_INSPECT_MODEL,
       durationMs:Date.now()-startedAt,
       firstPass:first.debug,
-      repairPass:repairDebug,
+      repairPass:null,
+      repairStrategy:"manual_retry_only",
       chosen:{
         spot,
         historyIssues:solverActionHistoryIssues(spot),
@@ -866,7 +947,8 @@ app.post("/solver/inspect", async (req,res)=>{
     return res.json({spot,ready:spot.missingFields.length===0,debug});
   }catch(error){
     console.error(JSON.stringify({event:"solver_spot_inspect_failed",requestId,ms:Date.now()-startedAt,error:String(error?.message||error)}));
-    return res.status(500).json({error:"Could not prepare this hand for the solver",message:String(error?.message||error),debug:{requestId,stage:"inspect_exception",durationMs:Date.now()-startedAt,error:String(error?.stack||error)}});
+    const status=Number(error?.status)||500;
+    return res.status(status).json({error:error?.code||"solver_inspect_failed",message:String(error?.message||error),validation:error?.validation||null,debug:{requestId,stage:"inspect_exception",durationMs:Date.now()-startedAt,error:String(error?.stack||error)}});
   }
 });
 app.post("/solver/solve", async (req,res)=>{
@@ -876,14 +958,23 @@ app.post("/solver/solve", async (req,res)=>{
   try{
     if(!POKERAI_KEY)return res.status(503).json({error:"solver_not_configured",message:"Pokerai API key is not configured yet.",debug:{requestId,stage:"provider_config"}});
     stage="parse_spot";
-    const spot=expandShortHandedPreflopForSixMax(normalizeSolverSpot(solverSpotSchema.parse(req.body?.spot||{})));
+    const parsedSpot=solverSpotInputSchema.safeParse(req.body?.spot||{});
+    if(!parsedSpot.success){
+      return res.status(422).json({
+        error:"invalid_spot",
+        message:"The saved hand data is incomplete or has invalid field types. Re-read the screenshot before solving.",
+        validation:parsedSpot.error.issues.map(issue=>({path:issue.path.join("."),message:issue.message})),
+        debug:{requestId,stage:"parse_spot",durationMs:Date.now()-startedAt}
+      });
+    }
+    const spot=expandShortHandedPreflopForSixMax(normalizeSolverSpot(parsedSpot.data));
     const missing=solverReadiness(spot);
     if(missing.length)return res.status(422).json({error:"incomplete_hand",message:"Complete the missing hand details before solving.",missingFields:missing,debug:{requestId,stage:"readiness",spot}});
     stage="provider_prepare";
     if(spot.tableSize<3||spot.tableSize>6)return res.status(422).json({error:"unsupported_format",message:"The current Pokerai adapter supports 3–6 handed NLH. Heads-up and larger tables require the fallback solver provider."});
 
     if(spot.decisionStreet==="preflop"){
-      const actions=(spot.actionHistory||[]).filter(a=>a.street==="preflop").map(pokeraiPreflopAction).filter(Boolean);
+      const actions=pokeraiPreflopActions((spot.actionHistory||[]).filter(a=>a.street==="preflop"));
       const result=await pokeraiPost("/v1/gto/preflop",{
         hole_cards:spot.heroCards.join(""),
         positions:{hero:spot.heroPosition},
@@ -1028,5 +1119,60 @@ app.post("/solver/poll", async (req,res)=>{
 });
 
 
+let pipelineSmokeSpot=null;
+let pipelineSmokeJob=null;
+const PIPELINE_SMOKE_IMAGE="data:image/png;base64,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";
+
+app.get("/__debug/solver-pipeline-v5/inspect",async (_req,res)=>{
+  try{
+    const first=await extractSolverSpot(PIPELINE_SMOKE_IMAGE,{title:"HH NL Hold'em $1 / $2",gameType:"cash",site:"test",stakes:"$1 / $2",heroPosition:"CO",heroCards:["Ah","Qh"],board:["Ad","Ts","8c","5h","Jd"],pot:"",actionSummary:""});
+    pipelineSmokeSpot=first.spot;
+    pipelineSmokeSpot.missingFields=solverReadiness({...pipelineSmokeSpot,missingFields:pipelineSmokeSpot.missingFields||[]});
+    console.log(JSON.stringify({event:"pipeline_smoke_inspected",ready:pipelineSmokeSpot.missingFields.length===0,spot:pipelineSmokeSpot,debug:first.debug}));
+    return res.json({ok:true,ready:pipelineSmokeSpot.missingFields.length===0,spot:pipelineSmokeSpot,debug:first.debug});
+  }catch(error){
+    console.error(JSON.stringify({event:"pipeline_smoke_inspect_failed",error:String(error?.stack||error)}));
+    return res.status(Number(error?.status)||500).json({ok:false,error:String(error?.message||error)});
+  }
+});
+
+app.get("/__debug/solver-pipeline-v5/solve",async (_req,res)=>{
+  try{
+    if(!pipelineSmokeSpot)return res.status(404).json({ok:false,error:"run inspect first"});
+    const base=`http://127.0.0.1:${process.env.PORT||3000}`;
+    const rr=await fetch(base+"/solver/solve",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({spot:pipelineSmokeSpot})});
+    const json=await rr.json();
+    if(rr.status===202&&json.job)pipelineSmokeJob=json.job;
+    console.log(JSON.stringify({event:"pipeline_smoke_solve",status:rr.status,json}));
+    return res.status(rr.status).json(json);
+  }catch(error){
+    return res.status(500).json({ok:false,error:String(error?.message||error)});
+  }
+});
+
+app.get("/__debug/solver-pipeline-v5/poll",async (_req,res)=>{
+  try{
+    if(!pipelineSmokeJob)return res.status(404).json({ok:false,error:"run solve first"});
+    const base=`http://127.0.0.1:${process.env.PORT||3000}`;
+    const rr=await fetch(base+"/solver/poll",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({job:pipelineSmokeJob})});
+    const json=await rr.json();
+    if(rr.ok&&rr.status!==202)pipelineSmokeJob=null;
+    console.log(JSON.stringify({event:"pipeline_smoke_poll",status:rr.status,json}));
+    return res.status(rr.status).json(json);
+  }catch(error){
+    return res.status(500).json({ok:false,error:String(error?.message||error)});
+  }
+});
+
 const port = Number(process.env.PORT || 3000);
-app.listen(port,()=>console.log(`Inner Game hand analysis API listening on ${port}`));
+if(process.env.NODE_ENV!=="test"){
+  app.listen(port,()=>console.log(`Inner Game hand analysis API listening on ${port}`));
+}
+
+export {
+  expectedPostflopSegments,
+  pokeraiPreflopActions,
+  preflopRangeReadinessIssues,
+  reconstructSolverMath,
+  solverSpotInputSchema
+};
