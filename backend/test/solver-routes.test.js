@@ -30,6 +30,20 @@ async function request(path, body) {
   return res;
 }
 
+test('background reconstruction can be submitted once and collected after completion through the real API',async t=>{
+  let calls=0;
+  t.mock.method(client.responses,'create',async()=>{calls++;return {output_text:JSON.stringify(screenshot())};});
+  const body={requestId:'background-reconstruction-route',kind:'reconstruction',payload:{imageDataUrl:'data:image/jpeg;base64,test'}};
+  const started=await request('/hand-jobs/start',body);assert.equal(started.statusCode,202);
+  const duplicate=await request('/hand-jobs/start',body);assert.equal(duplicate.body.jobId,started.body.jobId);
+  await new Promise(resolve=>setImmediate(resolve));
+  const completed=await request('/hand-jobs/poll',{jobId:started.body.jobId});
+  assert.equal(completed.statusCode,200);assert.equal(completed.body.status,'complete');assert.equal(completed.body.result.ready,true);assert.equal(calls,1);
+  assert.deepEqual(completed.body.result.spot.heroCards,['Ah','Qh']);
+  assert.equal((await request('/hand-jobs/poll',{jobId:'missing'})).statusCode,410);
+  assert.equal((await request('/hand-jobs/start',{...body,payload:{imageDataUrl:'invalid'}})).statusCode,400);
+});
+
 test("screenshot job completes and the resulting hand schedules the correct solver input", async t => {
   let finish;
   let modelCalls = 0;

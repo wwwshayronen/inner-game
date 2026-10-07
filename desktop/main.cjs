@@ -2,6 +2,7 @@ const { app, BrowserWindow, shell, Menu, nativeTheme, globalShortcut, desktopCap
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { createHandJobRunner } = require('./hand-jobs.cjs');
 
 nativeTheme.themeSource = 'dark';
 let mainWindow = null;
@@ -9,6 +10,7 @@ const screenshotWatchers = [];
 const seenScreenshotFiles = new Map();
 const screenshotTimers = new Set();
 let screenshotSession = null;
+let handJobRunner = null;
 
 function mimeForFile(file) {
   const ext = path.extname(file).toLowerCase();
@@ -137,6 +139,7 @@ function createWindow() {
 
   mainWindow = win;
   win.webContents.on('did-start-loading', () => setAutoScreenshotEnabled({ enabled: false }));
+  win.webContents.on('did-finish-load', () => { if (handJobRunner) handJobRunner.deliver(); });
   win.loadFile(path.join(__dirname, 'www', 'index.html'));
   win.once('ready-to-show', () => win.show());
 
@@ -162,6 +165,24 @@ function createWindow() {
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
+  handJobRunner = createHandJobRunner({directory:path.join(app.getPath('userData'),'hand-jobs'),onComplete:async(job,notify)=>{
+    const view=job.kind==='solve'?'solverResult':job.kind==='reconstruction'?'solverReview':'handDetail';
+    if(notify&&Notification.isSupported()){
+      const label=job.kind==='solve'?'GTO solution':job.kind==='reconstruction'?'Hand reconstruction':'Hand analysis';
+      const notification=new Notification({title:label+(job.status==='failed'?' needs attention':' ready'),body:job.error?.message||'Tap to open your hand.'});
+      notification.on('click',async()=>{
+        if(!mainWindow){createWindow();mainWindow.webContents.once('did-finish-load',()=>mainWindow.webContents.executeJavaScript(`window.innerGameOpenHand(${JSON.stringify(job.handId)},${JSON.stringify(view)})`));return;}
+        if(mainWindow.isMinimized())mainWindow.restore();mainWindow.show();mainWindow.focus();
+        await handJobRunner.deliver();
+        await mainWindow.webContents.executeJavaScript(`window.innerGameOpenHand(${JSON.stringify(job.handId)},${JSON.stringify(view)})`);
+      });
+      notification.show();
+    }
+    if(mainWindow&&!mainWindow.webContents.isLoading()){
+      await mainWindow.webContents.executeJavaScript(`window.innerGameReceiveHandJob && window.innerGameReceiveHandJob(${JSON.stringify(job)})`);
+    }
+  }});
+  handJobRunner.restore();
   createWindow();
 
   globalShortcut.register('CommandOrControl+Shift+H', capturePrimaryScreen);
@@ -170,6 +191,12 @@ app.whenReady().then(() => {
     if (event.sender !== mainWindow?.webContents) return false;
     return setAutoScreenshotEnabled(payload);
   });
+  ipcMain.handle('innergame:enqueue-hand-job', (event,payload) => {
+    if(event.sender!==mainWindow?.webContents)return {accepted:false,error:'Unknown app window.'};
+    try{return handJobRunner.enqueue(payload);}catch(error){return {accepted:false,error:String(error.message||error)};}
+  });
+  ipcMain.handle('innergame:ack-hand-job', (_event,payload) => handJobRunner.ack(payload));
+  ipcMain.handle('innergame:cancel-hand-jobs', (_event,payload) => handJobRunner.cancel(payload));
   ipcMain.handle('innergame:notify-hand', (_event, payload={}) => {
     try {
       if (!Notification.isSupported()) return false;
@@ -186,7 +213,7 @@ app.whenReady().then(() => {
           mainWindow.focus();
           if (payload.handId) {
             await mainWindow.webContents.executeJavaScript(
-              `window.innerGameOpenHand && window.innerGameOpenHand(${JSON.stringify(payload.handId)})`
+              `window.innerGameOpenHand && window.innerGameOpenHand(${JSON.stringify(payload.handId)},${JSON.stringify(payload.view||'handDetail')})`
             );
           }
         } catch (error) {

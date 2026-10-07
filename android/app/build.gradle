@@ -3,6 +3,10 @@ plugins { id 'com.android.application' }
 dependencies {
     implementation 'androidx.work:work-runtime:2.10.1'
     implementation 'androidx.webkit:webkit:1.14.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
+    testImplementation 'androidx.test:core:1.6.1'
+    testImplementation 'androidx.work:work-testing:2.10.1'
 }
 
 def ciRunNumber = (System.getenv('GITHUB_RUN_NUMBER') ?: '0').toInteger()
@@ -13,6 +17,7 @@ def updateKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH')
 android {
     namespace 'com.innergame.app'
     compileSdk 36
+    testOptions { unitTests.includeAndroidResources = true }
 
     defaultConfig {
         // Keep this package ID stable forever so Android treats future APKs as updates.
