@@ -7,11 +7,11 @@ import android.content.Intent;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.work.Data;
 import androidx.work.ListenableWorker;
+import androidx.work.WorkerParameters;
 import androidx.work.testing.TestWorkerBuilder;
 import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
@@ -23,8 +23,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URL;
-import java.net.URLConnection;
-import java.net.URLStreamHandler;
+import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.Certificate;
 import java.util.ArrayDeque;
@@ -71,10 +70,9 @@ public class HandJobWorkerTest {
         @Override public Certificate[] getLocalCertificates() { return new Certificate[0]; }
         @Override public Certificate[] getServerCertificates() { return new Certificate[0]; }
     }
-    @BeforeClass public static void network() {
-        URL.setURLStreamHandlerFactory(protocol -> "https".equals(protocol) ? new URLStreamHandler() {
-            @Override protected URLConnection openConnection(URL url) { return new Connection(url); }
-        } : null);
+    public static final class TestHandJobWorker extends HandJobWorker {
+        public TestHandJobWorker(Context context, WorkerParameters params) { super(context,params); }
+        @Override HttpURLConnection openConnection(URL url) { return new Connection(url); }
     }
     @Before public void setup() {
         context = ApplicationProvider.getApplicationContext();
@@ -91,7 +89,7 @@ public class HandJobWorkerTest {
         HandJobStore.write(context,job,true);return job;
     }
     private ListenableWorker.Result run(String id) {
-        HandJobWorker worker = TestWorkerBuilder.from(context,HandJobWorker.class,executor)
+        HandJobWorker worker = TestWorkerBuilder.from(context,TestHandJobWorker.class,executor)
                 .setInputData(new Data.Builder().putString("requestId",id).build()).build();
         assertEquals(1,worker.getInputData().getKeyValueMap().size());
         return worker.doWork();

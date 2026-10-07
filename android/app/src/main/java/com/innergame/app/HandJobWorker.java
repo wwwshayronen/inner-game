@@ -13,7 +13,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
-public final class HandJobWorker extends Worker {
+public class HandJobWorker extends Worker {
     public HandJobWorker(@NonNull Context context, @NonNull WorkerParameters params) { super(context, params); }
     @NonNull @Override public ForegroundInfo getForegroundInfo() {
         JSONObject job;
@@ -26,8 +26,9 @@ public final class HandJobWorker extends Worker {
         final int status; final JSONObject body;
         Response(int status, JSONObject body) { this.status=status; this.body=body; }
     }
+    HttpURLConnection openConnection(URL url) throws Exception { return (HttpURLConnection) url.openConnection(); }
     private Response post(String base, String route, JSONObject payload) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(base + route).openConnection();
+        HttpURLConnection connection = openConnection(new URL(base + route));
         try {
             connection.setRequestMethod("POST");connection.setConnectTimeout(20000);connection.setReadTimeout(30000);
             connection.setDoOutput(true);connection.setRequestProperty("Content-Type", "application/json");
