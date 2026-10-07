@@ -38,7 +38,7 @@ function applyPokerAction(state,action){
     state.pot=roundBb(state.pot+delta);
     addAmount(state.totalByPos,pos,delta);
   }
-  return {delta:roundBb(delta),potBefore:roundBb(potBefore),potAfter:roundBb(state.pot)};
+  return {delta:roundBb(delta),potBefore:roundBb(potBefore),potAfter:roundBb(state.pot),callAmount:Math.max(0,highest-invested),raiseAmount:Math.max(0,amount-highest)};
 }
 
 function visibleStreetPot(spot,street){
@@ -82,7 +82,11 @@ function reconstructSolverMath(spot){
       const a={...source,position:normalizePosition(source.position),action:source.action==="donk_bet"?"bet":source.action};
       const result=applyPokerAction(state,a);
       if(["bet","raise","allin"].includes(a.action)&&result.potBefore>0){
-        a.sizePctPot=roundBb(result.delta/result.potBefore*100);
+        // Pokerai sizes raises by the increment ABOVE the outstanding wager,
+        // divided by the pot AFTER calling, not all chips added / current pot.
+        a.sizePctPot=result.callAmount>0?
+          roundBb(result.raiseAmount/(result.potBefore+result.callAmount)*100):
+          roundBb(result.delta/result.potBefore*100);
       }else if(!["bet","raise","allin"].includes(a.action)){
         a.sizePctPot=0;
       }

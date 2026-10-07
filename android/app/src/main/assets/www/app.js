@@ -34,7 +34,7 @@ let pendingCapturedHand = null;
 let selectedSessionHandsId = null;
 let selectedHandId = null;
 let solverReviewHandId = null;
-let solverInspectingHandId = null;
+const solverInspectingHandIds = new Set();
 let solverPolling = new Set();
 let handsFilter = 'all';
 let handReturnRoute = 'handsLibrary';
@@ -124,7 +124,7 @@ function ensurePrepSchedule(){
 function gamificationStats(){
   const ss=state.sessions;
   let xp=0, aStreak=0;
-  ss.forEach(s=>{xp+=100; if((s.process||0)>=8)xp+=50; if((s.tilt||10)<=4)xp+=25; if(s.prep?.handWarmup?.completed)xp+=25;});
+  ss.forEach(s=>{xp+=100; if((s.process||0)>=8)xp+=50; if((s.tilt??10)<=4)xp+=25; if(s.prep?.handWarmup?.completed)xp+=25;});
   for(let i=ss.length-1;i>=0;i--){ if((ss[i].process||0)>=7)aStreak++; else break; }
   const level=Math.floor(xp/500)+1, inLevel=xp%500;
   const achievements=[
@@ -132,7 +132,7 @@ function gamificationStats(){
     {icon:'◈',name:'A-Game',desc:'10 strong-process sessions',on:ss.filter(s=>(s.process||0)>=8).length>=10},
     {icon:'⚡',name:'Volume',desc:'50 total hours',on:ss.reduce((a,s)=>a+(s.durationMs||0),0)>=50*3600000},
     {icon:'↗',name:'Comeback',desc:'Recover after a losing session',on:ss.some((s,i)=>i&&ss[i-1].pnl<0&&s.pnl>0)},
-    {icon:'◎',name:'Tilt Proof',desc:'5 sessions with tilt ≤ 3',on:ss.filter(s=>(s.tilt||10)<=3).length>=5},
+    {icon:'◎',name:'Tilt Proof',desc:'5 sessions with tilt ≤ 3',on:ss.filter(s=>(s.tilt??10)<=3).length>=5},
     {icon:'♠',name:'Warm-up Pro',desc:'Complete 10 hand warm-ups',on:ss.filter(s=>s.prep?.handWarmup?.completed).length>=10}
   ];
   return {xp,level,inLevel,progress:inLevel/500,aStreak,achievements};
@@ -157,7 +157,7 @@ function tabs(active){
 }
 function header(title,sub,back=true){ return `<div class="hero"><div class="topbar">${back?'<button class="back" data-back aria-label="Back">‹</button>':''}<div class="hero-copy"><h1>${title}</h1><p class="subtitle">${sub}</p></div></div></div>`; }
 function stepper(active){ const labels=['Breathe','Goals','3 Hands','Plan']; return `<div class="stepper four">${labels.map((l,i)=>`<div class="step ${i<active?'done':''} ${i===active?'active':''}"><div class="bubble">${i+1}</div><span>${l}</span></div>`).join('')}</div>`; }
-function appShell(content,tab='home'){ return `<main class="app-shell">${content}${tabs(tab)}</main>`; }
+function appShell(content,tab='home'){ return `<main class="app-shell page-flow">${content}${tabs(tab)}</main>`; }
 function formatDuration(ms){ const total=Math.max(0,Math.floor((Number(ms)||0)/1000)); const h=Math.floor(total/3600), m=Math.floor((total%3600)/60), s=total%60; return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
 function nativeCall(name,payload={}){
   try{
@@ -633,11 +633,11 @@ function solverDebugPanel(hand){
   if(!SOLVER_DEBUG_BUILD)return "";
   const count=(hand?.solverDebug||[]).length;
   const errorBadge=hand?.solverError?'<span class="negative">error</span>':'';
-  return '<section class="card pad solver-debug-card">'+
+  return '<details class="card pad solver-debug-card"><summary>Solver diagnostics</summary>'+
     '<div class="row between"><div><small class="eyebrow">DEBUG BUILD</small><div class="section-title">Solver trace</div></div><button class="btn tiny secondary" data-copy-solver-debug>Copy trace</button></div>'+
     '<div class="solver-debug-summary"><span>'+count+' events</span><span>'+esc(hand?.solverStatus||'idle')+'</span>'+errorBadge+'</div>'+
     '<pre id="solverDebugOutput">'+esc(solverDebugText(hand))+'</pre>'+
-  '</section>';
+  '</details>';
 }
 function solverHand(){ return solverReviewHandId?findHandRecord(solverReviewHandId):selectedHand(); }
 function solverActionLines(actions=[]){
@@ -650,10 +650,10 @@ function parseSolverActionLines(text=''){
       street:(p[0]||'preflop').toLowerCase(),
       position:(p[1]||'').toUpperCase(),
       action:(p[2]||'unknown').toLowerCase(),
-      amountBb:Number(p[3])||0,
-      sizePctPot:Number(p[4])||0
+      amountBb:p[3]?.trim()?Number(p[3]):0,
+      sizePctPot:p[4]?.trim()?Number(p[4]):0
     };
-  }).filter(a=>['preflop','flop','turn','river'].includes(a.street));
+  });
 }
 function solverLocalHistoryIssues(spot){
   const issues=[];
@@ -663,6 +663,9 @@ function solverLocalHistoryIssues(spot){
     issues.push('Action history must start with SB and BB blind posts');
   }
   if(rows.some(a=>a.action==='unknown'))issues.push('Action history contains an unknown action');
+  if(rows.some(a=>!['preflop','flop','turn','river'].includes(a.street)))issues.push('Action history contains an invalid street');
+  if(rows.some(a=>a.amountBb!==undefined&&(!Number.isFinite(a.amountBb)||a.amountBb<0)))issues.push('Action history contains an invalid amount');
+  if(rows.some(a=>['bet','donk_bet','raise','allin'].includes(a.action)&&a.amountBb!==undefined&&!(a.amountBb>0)))issues.push('Bet and raise amounts must be greater than zero');
   const hero=String(spot?.heroPosition||'').toUpperCase(), villain=String(spot?.villainPosition||'').toUpperCase();
   for(const street of ['flop','turn','river']){
     const actions=rows.filter(a=>a.street===street);
@@ -730,17 +733,18 @@ function solverMissing(spot){
   return [...new Set([...(spot.missingFields||[]),...missing])];
 }
 function solverField(label,key,value,type='text',step='any'){
-  return `<div class="solver-field"><label>${label}</label><input data-solver-field="${key}" type="${type}" ${type==='number'?`step="${step}" inputmode="decimal"`:''} value="${esc(value??'')}"></div>`;
+  return `<div class="field solver-field"><label>${label}</label><input data-solver-field="${key}" type="${type}" ${type==='number'?`min="0" step="${step}" inputmode="decimal"`:''} value="${esc(value??'')}"></div>`;
 }
 function solverSelect(label,key,value,options){
-  return `<div class="solver-field"><label>${label}</label><select data-solver-field="${key}">${options.map(([v,l])=>`<option value="${esc(v)}" ${String(value)===String(v)?'selected':''}>${esc(l)}</option>`).join('')}</select></div>`;
+  return `<div class="field solver-field"><label>${label}</label><select data-solver-field="${key}">${options.map(([v,l])=>`<option value="${esc(v)}" ${String(value)===String(v)?'selected':''}>${esc(l)}</option>`).join('')}</select></div>`;
 }
 async function inspectHandForSolver(id,force=false){
   const hand=findHandRecord(id); if(!hand)return;
-  if(solverInspectingHandId===id)return;
+  if(solverInspectingHandIds.has(id))return;
   solverReviewHandId=id;
-  if(hand.solverSpot&&hand.solverSpotVersion>=6&&!force){ navigate('solverReview'); return; }
-  route='solverReview'; solverInspectingHandId=id; solverDebugAdd(hand,'inspect:start',{force,spotVersion:hand.solverSpotVersion||0}); render();
+  if(hand.solverSpot&&hand.solverSpotVersion>=7&&!force){ navigate('solverReview'); return; }
+  hand.solverResult=null;hand.solverJob=null;hand.solverStatus='';
+  route='solverReview'; solverInspectingHandIds.add(id); solverDebugAdd(hand,'inspect:start',{force,spotVersion:hand.solverSpotVersion||0}); render();
   try{
     const imageDataUrl=await getHandImage(hand.imageKey);
     if(!imageDataUrl)throw new Error('Screenshot image is missing.');
@@ -782,7 +786,7 @@ async function inspectHandForSolver(id,force=false){
     if(!res.ok)throw new Error(json.message||json.error||'Could not read the hand for solving.');
     if(!json.spot)throw new Error('The screenshot reader returned no hand details. Try again.');
     hand.solverSpot=json.spot;
-    hand.solverSpotVersion=6;
+    hand.solverSpotVersion=7;
     hand.solverResult=null;
     hand.solverJob=null;
     hand.solverStatus='';
@@ -793,9 +797,12 @@ async function inspectHandForSolver(id,force=false){
     solverDebugAdd(hand,'inspect:error',{message:String(error?.message||error),stack:String(error?.stack||'')});
     save();
   }finally{
-    solverInspectingHandId=null;
+    solverInspectingHandIds.delete(id);
     if(route==='solverReview'&&solverReviewHandId===id)render();
   }
+}
+function invalidateHandSolver(hand){
+  hand.solverSpot=null;hand.solverSpotVersion=0;hand.solverResult=null;hand.solverJob=null;hand.solverStatus='';hand.solverError='';
 }
 function collectSolverSpot(){
   const hand=solverHand(); if(!hand?.solverSpot)return null;
@@ -823,7 +830,7 @@ function collectSolverSpot(){
 function solverReview(){
   const h=solverHand();
   if(!h){route='handsLibrary';return handsLibrary();}
-  const loading=solverInspectingHandId===h.id;
+  const loading=solverInspectingHandIds.has(h.id);
   if(loading)return appShell(`${header('Review <span class="accent">Spot</span>','Reading the screenshot for solver-ready details.')}
     <section class="card pad solver-loading-card"><span class="solver-spinner"></span><strong>Reconstructing the hand…</strong><p>Checking positions, stacks, board and every action up to your decision.</p></section>`,'sessions');
   if(!h.solverSpot)return appShell(`${header('Review <span class="accent">Spot</span>','We need a complete hand before solving.')}
@@ -857,14 +864,14 @@ function solverReview(){
       <div class="solver-action-editor">
         <div class="row between"><div><small class="eyebrow">ACTION HISTORY</small><h3>Preflop → decision</h3></div></div>
         <p>One action per line: <code>street | position | action | amountBB | %pot</code></p>
-        <textarea id="solverActionHistory" spellcheck="false">${esc(actionText)}</textarea>
+        <textarea id="solverActionHistory" aria-label="Action history before Hero's decision" spellcheck="false">${esc(actionText)}</textarea>
         <label class="solver-complete-check"><input id="solverHistoryComplete" type="checkbox" ${s.actionHistoryComplete?'checked':''}><span><strong>Action history is complete</strong><small>No action is missing from preflop through this screenshot decision.</small></span></label>
       </div>
       ${notes.length?`<div class="solver-inspection-notes">${notes.map(n=>`<div>• ${esc(n)}</div>`).join('')}</div>`:''}
     </section>
     <section class="solver-range-assumption card pad">
       <div><strong>Standard GTO ranges</strong><small>Inner Game derives the preflop ranges from the full action path, then solves the exact postflop stack/tree.</small></div>
-      <span class="solver-toggle on"><i></i></span>
+      <span class="solver-range-badge">Enabled</span>
     </section>
     <div class="solver-study-note"><strong>Post-hand study only</strong><span>Never use solver output while a real-money hand is in progress.</span></div>
     <button class="btn primary solver-run-btn" data-run-solver="${esc(h.id)}" ${ready?'':'disabled'}>Run solver <span>›</span></button>
@@ -877,13 +884,47 @@ function solverStrategyBars(strategy=[]){
     const freq=Math.max(0,Math.min(1,Number(x.frequency)||0));
     const action=String(x.action||'Action');
     const amount=x.amount_bb? ` · ${Number(x.amount_bb).toFixed(1)} BB` : '';
-    return `<div class="solver-strategy-row"><div class="row between"><span>${esc(action)}${esc(amount)}</span><strong>${Math.round(freq*100)}%</strong></div><div class="solver-bar"><i style="width:${Math.max(1,freq*100)}%"></i></div></div>`;
+    return `<div class="solver-strategy-row"><div class="row between"><span>${esc(action)}${esc(amount)}</span><strong>${Math.round(freq*100)}%</strong></div><div class="solver-bar"><i style="width:${freq*100}%"></i></div></div>`;
   }).join('');
+}
+function solverEvNumber(value){
+  if(!['number','string'].includes(typeof value)||typeof value==='string'&&!value.trim())return null;
+  return Number.isFinite(Number(value))?Number(value):null;
+}
+function solverEvDisplay(solution){
+  const ev=solution.evs;
+  if(!ev?.actions?.length)return null;
+  const values=ev.actions.map((_,i)=>solverEvNumber(ev.values?.[i]));
+  let decision=ev.reference==='decision';
+  if(!decision){
+    const fold=ev.actions.findIndex(action=>String(action).trim().toUpperCase()==='FOLD');
+    const baseline=fold<0?null:values[fold];
+    if(baseline!==null){values.forEach((value,i)=>{if(value!==null)values[i]=value-baseline;});decision=true;}
+  }
+  const available=values.filter(value=>value!==null);
+  if(!available.length)return null;
+  const best=Math.max(...available),index=values.indexOf(best);
+  return {actions:ev.actions,values,best,bestAction:ev.actions[index],decision,losses:values.map(value=>value===null?null:Math.max(0,best-value))};
+}
+function solverResultMatchesSpot(solution,spot){
+  if(!spot||spot.decisionStreet==='preflop')return true;
+  if(solution.street!==spot.decisionStreet)return false;
+  let facing=false;
+  for(const action of (spot.actionHistory||[]).filter(action=>action.street===spot.decisionStreet)){
+    if(['bet','donk_bet','raise','allin'].includes(action.action))facing=true;
+    if(['call','fold'].includes(action.action))facing=false;
+  }
+  const legal=facing?['fold','call','raise','allin']:['check','bet','allin'];
+  return (solution.strategy||[]).every(item=>legal.includes(String(item.action).toLowerCase().split(' ')[0]));
+}
+function solverActionLabel(action){
+  const match=String(action).match(/^(BET|RAISE)\s+([\d.]+)$/i);
+  return match?`${match[1].toUpperCase()} ${Number(match[2]).toFixed(1)} BB`:String(action).toUpperCase();
 }
 function solverResult(){
   const h=solverHand();
   if(!h){route='handsLibrary';return handsLibrary();}
-  if(['starting','pending'].includes(h.solverStatus)&&!h.solverResult){
+  if(['starting','pending'].includes(h.solverStatus)){
     return appShell(`${header('GTO <span class="accent">Solution</span>','Your solve is running.')}
       <section class="card pad solver-running-card"><span class="solver-spinner"></span><strong>Solving the exact spot…</strong><p>Custom trees can take a little while. You can leave this screen; Inner Game will keep the job saved and resume polling later.</p></section>
       <section class="card pad solver-assumptions"><small class="eyebrow">ASSUMPTIONS</small>${(h.solverJob?.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>
@@ -895,16 +936,26 @@ function solverResult(){
       <section class="card pad solver-error-card"><strong>Solver unavailable</strong><p>${esc(h.solverError||'The solve could not be completed.')}</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Review spot</button></section>
       ${solverDebugPanel(h)}`,'sessions');
   }
-  const ev=s.evs, bestEv=Number.isFinite(Number(s.bestEv))?Number(s.bestEv):null;
+  if(!solverResultMatchesSpot(s,h.solverSpot))return appShell(`${header('GTO <span class="accent">Solution</span>','')}
+    <section class="card pad solver-error-card"><strong>This result needs a new solve</strong><p>The saved actions do not match the selected decision. Review the hand and solve again.</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Review spot</button></section>`,'sessions');
+  const ev=solverEvDisplay(s),bestEv=ev?.decision?ev.best:null;
+  const bestAction=ev?.bestAction||[...(s.strategy||[])].sort((a,b)=>Number(b.frequency)-Number(a.frequency))[0]?.action||s.bestAction||'—';
+  const bestKind=String(bestAction).toLowerCase();
+  const mix=(s.strategy||[]).find(item=>{
+    const name=String(item.action).toLowerCase();
+    return name===bestKind||(bestKind.startsWith(name+' ')&&Number(item.amount_bb)===Number(bestKind.split(' ')[1]));
+  });
+  const explanation=s.evReferenceVersion===1?s.explanation:null;
   return appShell(`${header('GTO <span class="accent">Solution</span>','')}
+    ${h.solverSpot?`<div class="solver-decision-context"><strong>${esc((h.solverSpot.heroCards||[]).join(' '))} · ${esc(h.solverSpot.decisionStreet)}</strong><span>${esc((h.solverSpot.board||[]).slice(0,({flop:3,turn:4,river:5})[h.solverSpot.decisionStreet]||0).join(' '))}</span></div>`:''}
     <section class="card pad solver-answer-card">
-      <div><small>Highest-EV action</small><strong>${esc((s.bestAction||'—').toUpperCase())}</strong></div>
-      <div><small>GTO mix</small><strong class="positive">${Math.round((Number(s.bestFrequency)||0)*100)}%</strong></div>
-      ${bestEv!==null?`<div class="solver-best-ev"><small>Best action EV</small><strong>${bestEv.toFixed(3)} BB</strong></div>`:''}
+      <div><small>${ev?'Highest-EV action':'Most frequent action'}</small><strong>${esc(solverActionLabel(bestAction))}</strong></div>
+      <div><small>GTO mix</small><strong class="positive">${mix?Math.round(Number(mix.frequency)*100)+'%':'—'}</strong></div>
+      ${bestEv!==null?`<div class="solver-best-ev"><small>EV from this decision</small><strong>${bestEv.toFixed(3)} BB</strong></div>`:''}
     </section>
     <section class="card pad solver-strategy-card"><div class="section-title">GTO strategy</div>${solverStrategyBars(s.strategy||[])}</section>
-    ${ev?`<section class="card pad solver-ev-card"><div class="section-title">Action EVs</div>${(ev.actions||[]).map((a,i)=>`<div class="row between solver-ev-row"><span>${esc(a)}</span><strong>${Number(ev.values?.[i]||0).toFixed(3)} BB</strong></div>`).join('')}</section>`:''}
-    <section class="card pad solver-why-card"><div class="section-title">💡 Why</div><strong>${esc(s.explanation?.summary||'')}</strong><p>${esc(s.explanation?.details||'')}</p>${(s.explanation?.facts||[]).length?`<div class="solver-facts">${s.explanation.facts.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}</section>
+    ${ev?`<section class="card pad solver-ev-card"><div class="section-title">${ev.decision?'Action EVs':'EV loss vs best action'}</div><p class="field-hint">${ev.decision?'Measured from this decision. Folding is 0 BB; earlier wagers are sunk costs.':'The solver’s absolute EV reference is unavailable. These differences show the cost of each action; 0 means best.'}</p>${ev.actions.map((action,i)=>`<div class="row between solver-ev-row"><span>${esc(solverActionLabel(action))}</span><strong>${ev.values[i]===null?'Unavailable':(ev.decision?ev.values[i]:ev.losses[i]).toFixed(3)+' BB'}</strong></div>`).join('')}</section>`:''}
+    <section class="card pad solver-why-card"><div class="section-title">💡 Why</div><strong>${esc(explanation?.summary||'Compare the strategy mix and EV differences above.')}</strong>${explanation?.details?`<p>${esc(explanation.details)}</p>`:''}${(explanation?.facts||[]).length?`<div class="solver-facts">${explanation.facts.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}</section>
     <section class="card pad solver-assumptions"><div class="section-title">Assumptions</div>${(s.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>
     <div class="solver-study-note"><strong>Post-hand study only</strong><span>Solver results are for review and training, not live assistance.</span></div>
     <button class="btn secondary" data-solve-hand="${esc(h.id)}">Review & solve again</button>
@@ -912,11 +963,12 @@ function solverResult(){
 }
 async function runSolverForHand(id){
   const h=findHandRecord(id);if(!h)return;
+  if(['starting','pending'].includes(h.solverStatus))return;
   solverReviewHandId=id;
   const spot=collectSolverSpot()||h.solverSpot;
   const missing=solverMissing(spot);
   if(missing.length){h.solverError='Complete the highlighted hand details first.';save();render();return;}
-  h.solverError='';h.solverStatus='starting';solverDebugAdd(h,'solve:start',{spot});save();route='solverResult';render();
+  h.solverResult=null;h.solverJob=null;h.solverError='';h.solverStatus='starting';solverDebugAdd(h,'solve:start',{spot});save();route='solverResult';render();
   try{
     let res=null,json={},lastError=null;
     for(let attempt=0;attempt<4;attempt++){
@@ -945,8 +997,8 @@ async function runSolverForHand(id){
         await inspectHandForSolver(id,true);
         return;
       }
-      if(res.status===422&&Array.isArray(json.missingFields)){
-        h.solverStatus='';h.solverJob=null;h.solverSpot.missingFields=json.missingFields;h.solverError=json.message||'Review the detected hand details.';save();route='solverReview';render();return;
+      if(res.status===422&&Array.isArray(json.missingFields??json.missing)){
+        h.solverStatus='';h.solverJob=null;h.solverSpot.missingFields=json.missingFields||json.missing;h.solverError=json.message||'Review the detected hand details.';save();route='solverReview';render();return;
       }
       throw new Error(json.message||json.error||lastError?.message||'Solver request failed.');
     }
@@ -963,12 +1015,14 @@ async function pollSolverJob(id){
   try{
     for(let attempt=0;attempt<100;attempt++){
       const current=findHandRecord(id);if(!current?.solverJob)break;
+      const pollingJob=current.solverJob;
       let res,json;
       try{
         res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/poll',{
-          method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({job:current.solverJob})
+          method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',signal:AbortSignal.timeout(30000),body:JSON.stringify({job:pollingJob})
         });
         json=await res.json().catch(()=>({}));
+        if(findHandRecord(id)?.solverJob!==pollingJob)return;
         consecutiveNetworkErrors=0;
         solverDebugAdd(current,'poll:http',{attempt:attempt+1,status:res.status,ok:res.ok,spotStatus:json.spotStatus||'',debug:json.debug||null,error:json.error||'',message:json.message||''});
       }catch(error){
@@ -989,11 +1043,11 @@ async function pollSolverJob(id){
       }
       if(!res.ok){
         if(res.status===422&&json.error==='action_path_not_in_tree'){
-          current.solverJob=null;current.solverStatus='';current.solverSpotVersion=0;
-          current.solverError='The solver tree did not contain the detected action line. Re-reading the screenshot now.';
+          current.solverJob=null;current.solverStatus='failed';
+          current.solverError=json.message||'The solver tree did not contain the observed action line. Review the details or try solving again.';
           solverDebugAdd(current,'poll:reinspect',{reason:json.error,expectedPath:json.expectedPath||[],availableHeroNodes:json.availableHeroNodes||[],debug:json.debug||null});
           save();
-          await inspectHandForSolver(id,true);
+          if(route==='solverResult'&&solverReviewHandId===id)render();
           return;
         }
         throw new Error(json.message||json.error||'Solver failed.');
@@ -1559,7 +1613,19 @@ function recommendation(ss){ if(ss.length<3)return 'Keep the routine consistent 
 
 function profile(){ return appShell(`${header('More','Your game, your data, your progress.',false)}<div class="stack">${gamificationPanel()}<section class="card pad"><div class="section-title">Local-first data</div><p class="body-copy">No account and no server are required. Sessions, preparation settings, and insights are stored locally on this phone.</p></section><button class="btn secondary" id="exportData">Export my data</button><button class="btn secondary" id="seedDemo">Add demo sessions</button><button class="btn secondary danger-text" id="clearData">Clear all local data</button></div>`,'profile'); }
 
-function render(){ const app=document.getElementById('app'); app.innerHTML = ({home,prep:prepOverview,breathe,goals,handsIntro,handPlay,handExplain,handsComplete,review,active:activeSession,log:logSession,sessions,sessionDetail,editSession,insights,captureReview,sessionHands,handsLibrary,handDetail,solverReview,solverResult,profile}[route]||home)(); bind(); hydrateHandImages(); if(route==='active')startSessionTicker(); }
+function render(){
+  const app=document.getElementById('app');
+  app.innerHTML = ({home,prep:prepOverview,breathe,goals,handsIntro,handPlay,handExplain,handsComplete,review,active:activeSession,log:logSession,sessions,sessionDetail,editSession,insights,captureReview,sessionHands,handsLibrary,handDetail,solverReview,solverResult,profile}[route]||home)();
+  // All field variants use the same control styles and accessible label link.
+  app.querySelectorAll('.field').forEach((field,index)=>{
+    const control=field.querySelector('input,select,textarea'),label=field.querySelector('label');
+    if(!control||!label)return;
+    control.classList.add('form-control');
+    if(!control.id)control.id=`${route}-field-${index}`;
+    label.htmlFor=control.id;
+  });
+  bind();hydrateHandImages();if(route==='active')startSessionTicker();
+}
 function bind(){
   document.querySelectorAll('[data-nav]').forEach(el=>el.onclick=()=>navigate(el.dataset.nav));
   document.querySelectorAll('[data-back]').forEach(el=>el.onclick=()=>navigate(route==='solverReview'||route==='solverResult'?'handDetail':route==='handDetail'?handReturnRoute:route==='handsLibrary'?'sessions':route==='sessionDetail'?'sessions':route==='sessionHands'?(selectedSessionHandsId==='active'?'active':'sessions'):route==='captureReview'?(selectedHandId?'handDetail':'active'):route==='editSession'?'sessions':route==='log'||route==='active'?'home':route==='breathe'?'prep':route==='goals'?'breathe':route==='handsIntro'?'goals':route==='handPlay'?'handsIntro':route==='handExplain'?'handPlay':route==='handsComplete'?'handsIntro':route==='review'?'handsIntro':'home'));
@@ -1650,7 +1716,22 @@ function bind(){
   document.querySelectorAll('[data-save-hand-notes]').forEach(el=>el.onclick=()=>{const h=findHandRecord(el.dataset.saveHandNotes);if(!h)return;h.notes=(document.getElementById('handNotes')?.value||'').trim();save();const hint=document.getElementById('notesSavedHint');if(hint){hint.textContent='Saved';setTimeout(()=>{if(hint)hint.textContent='';},1600);}captureToast('Note saved ✓');});
   document.querySelectorAll('[data-edit-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.editHand);if(pendingCapturedHand)navigate('captureReview');});
   document.querySelectorAll('[data-delete-hand]').forEach(el=>el.onclick=()=>{removeCapturedHand(el.dataset.deleteHand);selectedHandId=null;navigate(handReturnRoute==='handDetail'?'handsLibrary':handReturnRoute);});
-  const saveCapture=document.querySelector('[data-save-capture]'); if(saveCapture)saveCapture.onclick=()=>{ if(!pendingCapturedHand)return; const editedId=pendingCapturedHand.id; document.querySelectorAll('[data-capture-field]').forEach(el=>{const k=el.dataset.captureField;let v=el.value;if(k==='heroCards'||k==='board')v=v.trim().split(/\s+/).filter(Boolean);pendingCapturedHand[k]=v;}); pendingCapturedHand.title=normalizeCapturedTitle(pendingCapturedHand,pendingCapturedHand.title); pendingCapturedHand.userEdited=true; pendingCapturedHand.reviewNeeded=false; pendingCapturedHand.status='ready'; save(); pendingCapturedHand=null; captureToast('Hand updated ✓'); selectedHandId=editedId; navigate('handDetail'); };
+  const saveCapture=document.querySelector('[data-save-capture]');
+  if(saveCapture)saveCapture.onclick=()=>{
+    if(!pendingCapturedHand)return;
+    const editedId=pendingCapturedHand.id;
+    const before=JSON.stringify([pendingCapturedHand.heroCards,pendingCapturedHand.board,pendingCapturedHand.position,pendingCapturedHand.pot,pendingCapturedHand.description]);
+    document.querySelectorAll('[data-capture-field]').forEach(el=>{
+      const key=el.dataset.captureField;
+      const value=['heroCards','board'].includes(key)?el.value.trim().split(/\s+/).filter(Boolean):el.value;
+      pendingCapturedHand[key]=value;
+    });
+    const after=JSON.stringify([pendingCapturedHand.heroCards,pendingCapturedHand.board,pendingCapturedHand.position,pendingCapturedHand.pot,pendingCapturedHand.description]);
+    if(before!==after)invalidateHandSolver(pendingCapturedHand);
+    pendingCapturedHand.title=normalizeCapturedTitle(pendingCapturedHand,pendingCapturedHand.title);
+    pendingCapturedHand.userEdited=true;pendingCapturedHand.reviewNeeded=false;pendingCapturedHand.status='ready';
+    save();pendingCapturedHand=null;captureToast('Hand updated ✓');selectedHandId=editedId;navigate('handDetail');
+  };
   const discardCapture=document.querySelector('[data-discard-capture]'); if(discardCapture)discardCapture.onclick=()=>{if(pendingCapturedHand)removeCapturedHand(pendingCapturedHand.id);pendingCapturedHand=null;navigate(handReturnRoute||'handsLibrary');};
   document.querySelectorAll('[data-retry-hand]').forEach(el=>el.onclick=()=>retryCapturedHand(el.dataset.retryHand));
   document.querySelectorAll('[data-review-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.reviewHand);if(pendingCapturedHand)navigate('captureReview');});
