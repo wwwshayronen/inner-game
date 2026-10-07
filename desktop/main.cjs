@@ -7,6 +7,8 @@ nativeTheme.themeSource = 'dark';
 let mainWindow = null;
 const screenshotWatchers = [];
 const seenScreenshotFiles = new Map();
+const screenshotTimers = new Set();
+let screenshotSession = null;
 
 function mimeForFile(file) {
   const ext = path.extname(file).toLowerCase();
@@ -20,11 +22,11 @@ function looksLikeScreenshotFile(file) {
   return /screenshot|screen shot|screen_shot|screencapture|capture/.test(name) && /\.(png|jpe?g|webp)$/i.test(name);
 }
 
-async function dispatchScreenshotFile(file) {
-  if (!mainWindow || !looksLikeScreenshotFile(file)) return;
+async function dispatchScreenshotFile(file, session = screenshotSession) {
+  if (!session || screenshotSession !== session || !mainWindow || !looksLikeScreenshotFile(file)) return false;
   try {
     const stat = fs.statSync(file);
-    if (!stat.isFile() || Date.now() - stat.mtimeMs > 30000) return;
+    if (!stat.isFile() || stat.mtimeMs < session.watchStartedAt || Date.now() - stat.mtimeMs > 30000) return false;
     const prior = seenScreenshotFiles.get(file);
     if (prior && Math.abs(prior - stat.mtimeMs) < 1) return;
     seenScreenshotFiles.set(file, stat.mtimeMs);
@@ -32,7 +34,7 @@ async function dispatchScreenshotFile(file) {
     if (bytes.length > 14_000_000) return;
     const dataUrl = `data:${mimeForFile(file)};base64,${bytes.toString('base64')}`;
     await mainWindow.webContents.executeJavaScript(
-      `window.innerGameReceiveScreenshot && window.innerGameReceiveScreenshot(${JSON.stringify(dataUrl)}, 'desktop_auto')`
+      `window.innerGameReceiveScreenshot && window.innerGameReceiveScreenshot(${JSON.stringify(dataUrl)}, 'desktop_auto', ${JSON.stringify(session.id)})`
     );
   } catch (error) {
     console.error('Screenshot watcher failed', error);
@@ -40,12 +42,18 @@ async function dispatchScreenshotFile(file) {
 }
 
 function watchScreenshotFolder(dir) {
+  const session = screenshotSession;
+  if (!session) return;
   try {
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return;
     const watcher = fs.watch(dir, { persistent: false }, (_event, filename) => {
-      if (!filename) return;
+      if (!filename || screenshotSession !== session) return;
       const file = path.join(dir, String(filename));
-      setTimeout(() => dispatchScreenshotFile(file), 450);
+      const timer = setTimeout(() => {
+        screenshotTimers.delete(timer);
+        dispatchScreenshotFile(file, session);
+      }, 450);
+      screenshotTimers.add(timer);
     });
     screenshotWatchers.push(watcher);
   } catch (error) {
@@ -54,6 +62,7 @@ function watchScreenshotFolder(dir) {
 }
 
 function startScreenshotWatchers() {
+  if (!screenshotSession || screenshotWatchers.length) return;
   const home = os.homedir();
   const candidates = [
     path.join(home, 'Desktop'),
@@ -63,8 +72,29 @@ function startScreenshotWatchers() {
   [...new Set(candidates)].forEach(watchScreenshotFolder);
 }
 
+function stopScreenshotWatchers() {
+  screenshotWatchers.splice(0).forEach(watcher => { try { watcher.close(); } catch {} });
+  screenshotTimers.forEach(timer => clearTimeout(timer));
+  screenshotTimers.clear();
+  seenScreenshotFiles.clear();
+}
+
+function setAutoScreenshotEnabled(payload = {}) {
+  const enabled = payload?.enabled === true && typeof payload.sessionId === 'string' && payload.sessionId.length > 0
+    && Number.isFinite(Number(payload.startedAt)) && Number(payload.startedAt) > 0;
+  if (enabled && screenshotSession?.id === payload.sessionId) return true;
+  screenshotSession = null;
+  stopScreenshotWatchers();
+  if (enabled) {
+    screenshotSession = { id: payload.sessionId, watchStartedAt: Date.now() };
+    startScreenshotWatchers();
+  }
+  return enabled;
+}
+
 async function capturePrimaryScreen() {
-  if (!mainWindow) return;
+  const session = screenshotSession, win = mainWindow;
+  if (!win || !session) return false;
   try {
     const display = screen.getPrimaryDisplay();
     const scale = display.scaleFactor || 1;
@@ -75,11 +105,12 @@ async function capturePrimaryScreen() {
       thumbnailSize: { width, height },
       fetchWindowIcons: false
     });
+    if (screenshotSession !== session || mainWindow !== win) return false;
     const source = sources.find(s => s.display_id === String(display.id)) || sources[0];
     if (!source || source.thumbnail.isEmpty()) throw new Error('No screen source');
     const dataUrl = source.thumbnail.toDataURL();
     await mainWindow.webContents.executeJavaScript(
-      `window.innerGameReceiveScreenshot && window.innerGameReceiveScreenshot(${JSON.stringify(dataUrl)}, 'desktop_hotkey')`
+      `window.innerGameReceiveScreenshot && window.innerGameReceiveScreenshot(${JSON.stringify(dataUrl)}, 'desktop_hotkey', ${JSON.stringify(session.id)})`
     );
   } catch (error) {
     console.error('Capture failed', error);
@@ -105,6 +136,7 @@ function createWindow() {
   });
 
   mainWindow = win;
+  win.webContents.on('did-start-loading', () => setAutoScreenshotEnabled({ enabled: false }));
   win.loadFile(path.join(__dirname, 'www', 'index.html'));
   win.once('ready-to-show', () => win.show());
 
@@ -121,7 +153,10 @@ function createWindow() {
   });
 
   win.on('closed', () => {
-    if (mainWindow === win) mainWindow = null;
+    if (mainWindow === win) {
+      setAutoScreenshotEnabled({ enabled: false });
+      mainWindow = null;
+    }
   });
 }
 
@@ -130,8 +165,11 @@ app.whenReady().then(() => {
   createWindow();
 
   globalShortcut.register('CommandOrControl+Shift+H', capturePrimaryScreen);
-  startScreenshotWatchers();
   ipcMain.handle('innergame:capture-hand', capturePrimaryScreen);
+  ipcMain.handle('innergame:set-auto-screenshot-enabled', (event, payload) => {
+    if (event.sender !== mainWindow?.webContents) return false;
+    return setAutoScreenshotEnabled(payload);
+  });
   ipcMain.handle('innergame:notify-hand', (_event, payload={}) => {
     try {
       if (!Notification.isSupported()) return false;
@@ -168,7 +206,7 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('will-quit', () => { globalShortcut.unregisterAll(); screenshotWatchers.forEach(w=>{try{w.close();}catch{}}); });
+app.on('will-quit', () => { globalShortcut.unregisterAll(); setAutoScreenshotEnabled({ enabled: false }); });
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
