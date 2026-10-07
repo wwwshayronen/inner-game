@@ -138,7 +138,7 @@ async function desktopApp(){
   function BrowserWindow(){return win;}
   BrowserWindow.getAllWindows=()=>[win];
   const electron={
-    app:{whenReady:()=>Promise.resolve(),on:()=>{}},BrowserWindow,nativeTheme:{},Menu:{setApplicationMenu:()=>{}},
+    app:{whenReady:()=>Promise.resolve(),on:()=>{},getPath:()=>'/test-app-data'},BrowserWindow,nativeTheme:{},Menu:{setApplicationMenu:()=>{}},
     globalShortcut:{register:(name,fn)=>calls.hotkeys[name]=fn},ipcMain:{handle:(name,fn)=>calls.handlers[name]=fn},
     screen:{getPrimaryDisplay:()=>({id:1,bounds:{width:1280,height:720},scaleFactor:1})},
     desktopCapturer:{getSources:()=>{calls.captureRequests++;return getSources();}}
@@ -149,7 +149,7 @@ async function desktopApp(){
     watch:(_dir,_options,callback)=>{const watcher={callback,closed:false,close(){this.closed=true;}};calls.watchers.push(watcher);return watcher;}
   };
   const context=vm.createContext({
-    require:name=>({electron,path,fs,os:{homedir:()=>'/home/test'}}[name]),__dirname:'/desktop',process:{platform:'darwin'},console,
+    require:name=>({electron,path,fs,os:{homedir:()=>'/home/test'},'./hand-jobs.cjs':{createHandJobRunner:()=>({restore(){},deliver(){}})}}[name]),__dirname:'/desktop',process:{platform:'darwin'},console,
     Date:{now:()=>now},setTimeout:callback=>{const id=++nextTimer;calls.timers.set(id,callback);return id;},clearTimeout:id=>calls.timers.delete(id)
   });
   vm.runInContext(desktopSource,context);await tick();

@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { z } from "zod";
 import { normalizePosition, reconstructSolverMath, roundBb } from "./solver-math.js";
 import { createInspectionJobs } from "./inspection-jobs.js";
+import { createBackgroundHandJobs } from "./background-hand-jobs.js";
 import { readEvs, foldEv, normalizeDecisionEvs, bestEvAction, foldReferenceNodes } from "./solver-ev.js";
 
 const app = express();
@@ -492,7 +493,7 @@ async function extractSolverSpot(imageDataUrl,hand={},repairContext=null){
       {type:"input_image",image_url:imageDataUrl,detail:"high"}
     ]}],
     text:{format:{type:"json_schema",name:"solver_spot_inspection",strict:true,schema:solverInspectJsonSchema}}
-  });
+  },{timeout:240000,maxRetries:0});
   let decoded;
   try{
     if(!response.output_text||!String(response.output_text).trim())throw new Error("empty model output");
@@ -715,7 +716,7 @@ app.get("/solver/status", (_req,res)=>res.json({
   ]
 }));
 
-app.post("/analyze-hand", async (req,res)=>{
+async function handleHandAnalysis(req,res){
   const startedAt = Date.now();
   try{
     const { imageDataUrl, context={} } = req.body || {};
@@ -750,7 +751,7 @@ app.post("/analyze-hand", async (req,res)=>{
         ]
       }],
       text:{format:{type:"json_schema",name:"poker_hand_capture",strict:true,schema}}
-    });
+    },{timeout:120000,maxRetries:0});
 
     const parsed = handSchema.parse(JSON.parse(response.output_text));
     parsed.heroCards = validateCards(parsed.heroCards);
@@ -765,7 +766,8 @@ app.post("/analyze-hand", async (req,res)=>{
     console.error(JSON.stringify({event:"hand_analysis_failed",ms:Date.now()-startedAt,model:MODEL,error:String(error?.message||error)}));
     return res.status(500).json({error:"Hand analysis failed"});
   }
-});
+}
+app.post("/analyze-hand",handleHandAnalysis);
 
 const inspectionJobs=createInspectionJobs();
 async function inspectSolverHand(imageDataUrl,hand,requestId){
@@ -824,7 +826,7 @@ app.post("/solver/inspect/poll", (req,res)=>{
   if(job.status==="failed")return sendInspectionError(res,job.error,inspectionId);
   return res.json(job.result);
 });
-app.post("/solver/solve", async (req,res)=>{
+async function handleSolverSolve(req,res){
   const startedAt=Date.now();
   const requestId=solverDebugId();
   let stage="start";
@@ -918,10 +920,11 @@ app.post("/solver/solve", async (req,res)=>{
     console.error(JSON.stringify({event:"solver_schedule_failed",requestId,stage,ms:Date.now()-startedAt,code:error?.code,error:String(error?.message||error)}));
     return res.status(error?.status&&error.status<500?error.status:500).json({error:error?.code||"solver_failed",message:String(error?.message||"Solver failed"),debug:{requestId,stage,durationMs:Date.now()-startedAt,code:error?.code||"",status:error?.status||0,payload:error?.payload||null,stack:String(error?.stack||"")}});
   }
-});
+}
 
 const nodeMatchWaits=new Map();
 const pollInFlight=new Map(),pollCompleted=new Map();
+app.post("/solver/solve",handleSolverSolve);
 function legalSolverActions(spot){
   let facing=false;
   for(const action of (spot?.actionHistory||[]).filter(a=>a.street===spot.decisionStreet)){
@@ -930,7 +933,7 @@ function legalSolverActions(spot){
   }
   return facing?["fold","call","raise","allin"]:["check","bet","allin"];
 }
-app.post("/solver/poll", async (req,res)=>{
+async function handleSolverPoll(req,res){
   const startedAt=Date.now();
   const requestId=solverDebugId();
   let stage="start";
@@ -1047,8 +1050,37 @@ app.post("/solver/poll", async (req,res)=>{
     if(status===202)return res.status(202).json({status:"pending",message:String(error?.message||"Solver busy"),debug});
     return res.status(status).json({error:error?.code||"solver_failed",message:String(error?.message||"Solver failed"),debug});
   }finally{if(claimedKey)pollInFlight.delete(claimedKey);}
-});
+}
+app.post("/solver/poll",handleSolverPoll);
 
+async function invokeHandHandler(handler,body){
+  const response={status:200,body:null};
+  const res={status(code){response.status=code;return this;},json(data){response.body=data;return this;}};
+  await handler({body},res);
+  return response;
+}
+const backgroundHandJobs=createBackgroundHandJobs({
+  analyze:body=>invokeHandHandler(handleHandAnalysis,body),
+  reconstruct:body=>inspectSolverHand(body.imageDataUrl,body.hand||{},solverDebugId()),
+  solve:body=>invokeHandHandler(handleSolverSolve,body),
+  poll:body=>invokeHandHandler(handleSolverPoll,body)
+});
+app.post("/hand-jobs/start",(req,res)=>{
+  try{
+    const {kind,payload}=req.body||{};
+    if(["analysis","reconstruction"].includes(kind)&&
+      (typeof payload?.imageDataUrl!=="string"||!payload.imageDataUrl.startsWith("data:image/")||payload.imageDataUrl.length>16_000_000)){
+      return res.status(400).json({error:"A screenshot image is required."});
+    }
+    const jobId=backgroundHandJobs.start(req.body||{});
+    return res.status(202).json({status:"pending",jobId});
+  }catch(error){return res.status(Number(error.status)||500).json({error:String(error.message||error)});}
+});
+app.post("/hand-jobs/poll",(req,res)=>{
+  const job=backgroundHandJobs.get(req.body?.jobId);
+  if(!job)return res.status(410).json({error:"hand_job_expired",message:"This hand job expired or processing was interrupted. Your screenshot is saved; tap Retry."});
+  return res.status(job.status==="pending"?202:200).json(job);
+});
 
 let pipelineSmokeSpot=null;
 let pipelineSmokeJob=null;

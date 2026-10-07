@@ -21,6 +21,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.FileObserver;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.Base64;
@@ -78,6 +79,8 @@ public final class MainActivity extends Activity {
     private WebView webView;
     private String pendingScreenshotDataUrl;
     private String pendingHandId;
+    private String pendingHandView = "handDetail";
+    private FileObserver handJobObserver;
     private String pendingHandNotificationPayload;
     private static final class ScreenshotSession {
         final String id;
@@ -119,6 +122,13 @@ public final class MainActivity extends Activity {
 
         createNotificationChannel();
         createHandNotificationChannel();
+        HandJobStore.restore(getApplicationContext());
+        handJobObserver = new FileObserver(HandJobStore.directory(this).getAbsolutePath(), FileObserver.CLOSE_WRITE | FileObserver.MOVED_TO) {
+            @Override public void onEvent(int event, String path) {
+                if (path != null && path.endsWith(".json")) runOnUiThread(MainActivity.this::dispatchBackgroundHandJobs);
+            }
+        };
+        handJobObserver.startWatching();
         webView.addJavascriptInterface(new NativeBridge(), "InnerGameNative");
         WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
@@ -140,6 +150,7 @@ public final class MainActivity extends Activity {
                 dispatchPendingHandOpen();
                 dispatchQueuedScreenshots();
                 dispatchPendingNativeAnalyses();
+                dispatchBackgroundHandJobs();
             }
         });
         handleIncomingIntent(getIntent());
@@ -151,6 +162,9 @@ public final class MainActivity extends Activity {
         String handId = intent.getStringExtra("handId");
         if (handId != null && !handId.isEmpty()) {
             pendingHandId = handId;
+            pendingHandView = intent.getStringExtra("handView");
+            if (pendingHandView == null) pendingHandView = "handDetail";
+            dispatchBackgroundHandJobs();
             dispatchPendingHandOpen();
         }
         if (!Intent.ACTION_SEND.equals(intent.getAction())) return;
@@ -196,9 +210,10 @@ public final class MainActivity extends Activity {
     private void dispatchPendingHandOpen() {
         if (webView == null || pendingHandId == null || pendingHandId.isEmpty()) return;
         final String handId = pendingHandId;
+        final String view = pendingHandView;
         webView.post(() -> webView.evaluateJavascript(
                 "(function(){if(window.innerGameOpenHand){return window.innerGameOpenHand(" +
-                        JSONObject.quote(handId) + ");}return false;})()",
+                        JSONObject.quote(handId) + "," + JSONObject.quote(view) + ");}return false;})()",
                 result -> {
                     if ("true".equals(result)) pendingHandId = null;
                 }
@@ -497,14 +512,13 @@ public final class MainActivity extends Activity {
                     throw new CaptureStageException("IMAGE_READ", "No readable image data");
                 }
 
-                // Background capture is intentionally offline-first. Android only persists
-                // the screenshot here; the proven WebView analysis path runs next time
-                // Inner Game is foregrounded.
+                // Persist before scheduling native analysis so the image and request
+                // survive process death and temporary network loss.
                 persistQueuedScreenshot(captureId, dataUrl, now, session.id);
                 logCaptureDiagnostic(captureId, "QUEUED", "chars=" + dataUrl.length());
                 notifyAutoCaptureQueued(captureId);
 
-                // If Inner Game happens to already be foregrounded, process immediately.
+                // Import the pending hand if Inner Game is already foregrounded.
                 runOnUiThread(this::dispatchQueuedScreenshots);
             } catch (Exception error) {
                 String stage = error instanceof CaptureStageException
@@ -658,9 +672,24 @@ public final class MainActivity extends Activity {
         pending.put("status", "captured_pending");
         pending.put("capturedAt", capturedAt);
         pending.put("sessionId", sessionId);
+        pending.put("backgroundJobId", captureId);
         byte[] bytes = pending.toString().getBytes(StandardCharsets.UTF_8);
         try (FileOutputStream output = new FileOutputStream(pendingHandFile(captureId))) {
             output.write(bytes);
+        }
+        JSONObject job = new JSONObject();
+        job.put("requestId", captureId);job.put("handId", captureId);job.put("kind", "analysis");
+        job.put("capturedAt", capturedAt);job.put("sessionId", sessionId);job.put("source", "android_auto");
+        job.put("payload", new JSONObject().put("imageDataUrl", dataUrl));
+        try { HandJobStore.enqueue(getApplicationContext(), job); }
+        catch (Exception error) {
+            // Preserve the original import path if native scheduling fails.
+            HandJobStore.remove(getApplicationContext(), captureId);
+            pending.remove("backgroundJobId");
+            try (FileOutputStream output = new FileOutputStream(pendingHandFile(captureId))) {
+                output.write(pending.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            logCaptureDiagnostic("queue", "BACKGROUND_QUEUE", diagnosticErrorText(error));
         }
     }
 
@@ -684,12 +713,14 @@ public final class MainActivity extends Activity {
                 String dataUrl = pending.getString("dataUrl");
                 long capturedAt = pending.optLong("capturedAt", System.currentTimeMillis());
                 String sessionId = pending.optString("sessionId", "");
+                String backgroundJobId = pending.optString("backgroundJobId", "");
+                String receiver = backgroundJobId.isEmpty() ? "innerGameReceiveQueuedScreenshot" : "innerGameReceiveBackgroundCapture";
 
                 webView.post(() -> webView.evaluateJavascript(
-                        "(function(){if(window.innerGameReceiveQueuedScreenshot){window.innerGameReceiveQueuedScreenshot(" +
+                        "(function(){if(window." + receiver + "){window." + receiver + "(" +
                                 JSONObject.quote(captureId) + "," +
                                 JSONObject.quote(dataUrl) + "," +
-                                capturedAt + "," + JSONObject.quote(sessionId) +
+                                capturedAt + "," + JSONObject.quote(sessionId) + "," + JSONObject.quote(backgroundJobId) +
                                 ");return true;}return false;})()",
                         null
                 ));
@@ -777,6 +808,22 @@ public final class MainActivity extends Activity {
     private void acknowledgePendingNativeHand(String captureId) {
         if (captureId == null || captureId.isEmpty()) return;
         try { pendingHandFile(captureId).delete(); } catch (Exception ignored) {}
+    }
+
+    private void dispatchBackgroundHandJobs() {
+        if (webView == null) return;
+        for (File file : HandJobStore.files(this)) {
+            try {
+                JSONObject job = HandJobStore.read(this, file.getName().replace(".json", ""));
+                if (job == null || "pending".equals(job.optString("status"))) continue;
+                if (!"analysis".equals(job.optString("kind"))) job.remove("payload");
+                String json = job.toString();
+                webView.post(() -> {
+                    if (webView != null) webView.evaluateJavascript(
+                            "window.innerGameReceiveHandJob && window.innerGameReceiveHandJob(" + JSONObject.quote(json) + ")", null);
+                });
+            } catch (Exception ignored) {}
+        }
     }
 
 
@@ -988,10 +1035,13 @@ public final class MainActivity extends Activity {
             String body = data.optString("body", "");
             String stage = data.optString("stage", "");
             String handId = data.optString("handId", "");
+            String handView = data.optString("view", "handDetail");
 
             Intent openIntent = new Intent(this, MainActivity.class);
             openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
             if (!handId.isEmpty()) openIntent.putExtra("handId", handId);
+            openIntent.putExtra("handView", handView);
+            openIntent.setData(Uri.parse("innergame://hand/" + Uri.encode(handId) + "/" + Uri.encode(handView)));
             PendingIntent contentIntent = PendingIntent.getActivity(
                     this,
                     9100 + Math.abs(handId.hashCode() % 500),
@@ -1092,6 +1142,38 @@ public final class MainActivity extends Activity {
 
     private final class NativeBridge {
         @JavascriptInterface
+        public String enqueueHandJob(String payload) {
+            try {
+                HandJobStore.enqueue(getApplicationContext(), new JSONObject(payload));
+                runOnUiThread(MainActivity.this::requestNotificationPermissionIfNeeded);
+                return "{\"accepted\":true}";
+            } catch (Exception error) {
+                return "{\"accepted\":false,\"error\":" + JSONObject.quote(String.valueOf(error.getMessage())) + "}";
+            }
+        }
+        @JavascriptInterface
+        public void ackHandJob(String payload) {
+            try {
+                String id = new JSONObject(payload).getString("requestId");
+                HandJobStore.remove(getApplicationContext(), id);
+                runOnUiThread(() -> {
+                    acknowledgePendingNativeHand(id);
+                    dispatchPendingHandOpen();
+                });
+            } catch (Exception ignored) {}
+        }
+        @JavascriptInterface
+        public void cancelHandJobs(String payload) {
+            try {
+                JSONObject data = new JSONObject(payload);
+                if (data.optBoolean("all", false)) HandJobStore.removeAll(getApplicationContext());
+                else {
+                    org.json.JSONArray ids = data.optJSONArray("requestIds");
+                    if (ids != null) for (int i=0;i<ids.length();i++) HandJobStore.remove(getApplicationContext(), ids.getString(i));
+                }
+            } catch (Exception ignored) {}
+        }
+        @JavascriptInterface
         public void scheduleBreakReminders(String payload) {
             runOnUiThread(() -> scheduleBreaks(payload));
         }
@@ -1136,7 +1218,7 @@ public final class MainActivity extends Activity {
         public void ackNativeAnalysis(String payload) {
             try {
                 String captureId = new JSONObject(payload).optString("id", "");
-                runOnUiThread(() -> MainActivity.this.acknowledgePendingNativeHand(captureId));
+                runOnUiThread(() -> { MainActivity.this.acknowledgePendingNativeHand(captureId); dispatchPendingHandOpen(); });
             } catch (Exception ignored) {}
         }
     }
@@ -1155,6 +1237,7 @@ public final class MainActivity extends Activity {
                 ensureCapturePermissionsOnOpen();
                 dispatchQueuedScreenshots();
                 dispatchPendingNativeAnalyses();
+                dispatchBackgroundHandJobs();
             }, 250L);
         }
     }
@@ -1162,6 +1245,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         screenshotSession = null;
+        if (handJobObserver != null) handJobObserver.stopWatching();
         unregisterScreenshotObserver();
         if (webView != null) {
             webView.removeJavascriptInterface("InnerGameNative");

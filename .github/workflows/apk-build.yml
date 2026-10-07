@@ -51,10 +51,10 @@ jobs:
             exit 1
           fi
           printf '%s' "$ANDROID_UPDATE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/innergame-update.jks"
-      - name: Build updateable APK
+      - name: Test background jobs and build updateable APK
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/innergame-update.jks
-        run: gradle -p android --no-daemon assembleDebug
+        run: gradle -p android --no-daemon testDebugUnitTest assembleDebug
       - name: Prepare APK
         run: cp android/app/build/outputs/apk/debug/app-debug.apk InnerGame-Android-latest.apk
       - uses: actions/upload-artifact@v4

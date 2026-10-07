@@ -4,6 +4,7 @@ const GOALS = ['Stay patient','No results checking','Mark tough spots','Take 3 b
 const defaults = {
   sessions: [],
   generalHands: [],
+  dismissedHandJobIds: [],
   games:['NL100'],
   rooms:['GG Poker','Live Casino'],
   prep: {
@@ -17,6 +18,7 @@ const defaults = {
 const state = load();
 let syncedScreenshotSessionId;
 const queuedScreenshotsProcessing = new Set();
+const backgroundHandDeliveries = new Set();
 let route = state.activeSession ? 'active' : 'home';
 let breathTimer = null;
 let breathRemaining = (({beginner:3,intermediate:10,advanced:20})[state.prep.breathLevel]||3)*60;
@@ -168,9 +170,32 @@ function nativeCall(name,payload={}){
       if(name==='captureHand'&&typeof window.InnerGameDesktop.captureHand==='function'){ window.InnerGameDesktop.captureHand(); return; }
       if(name==='notifyHand'&&typeof window.InnerGameDesktop.notifyHand==='function'){ window.InnerGameDesktop.notifyHand(payload); return; }
       if(name==='setAutoScreenshotEnabled'&&typeof window.InnerGameDesktop.setAutoScreenshotEnabled==='function'){ window.InnerGameDesktop.setAutoScreenshotEnabled(payload); return; }
+      if(['ackHandJob','cancelHandJobs'].includes(name)&&typeof window.InnerGameDesktop[name]==='function'){window.InnerGameDesktop[name](payload);return;}
     }
     if(window.webkit?.messageHandlers?.innerGame) window.webkit.messageHandlers.innerGame.postMessage({action:name,...payload});
   }catch{}
+}
+function supportsBackgroundHandJobs(){return typeof window.InnerGameNative?.enqueueHandJob==='function'||typeof window.InnerGameDesktop?.enqueueHandJob==='function';}
+function handJobRequestId(){return crypto.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`;}
+async function enqueueBackgroundHandJob(job){
+  const request={...job,apiBase:HAND_ANALYSIS_API_URL.replace(/\/$/,'')};
+  let response=window.InnerGameNative?.enqueueHandJob
+    ?window.InnerGameNative.enqueueHandJob(JSON.stringify(request))
+    :await window.InnerGameDesktop.enqueueHandJob(request);
+  if(typeof response==='string')response=JSON.parse(response);
+  if(!response?.accepted)throw new Error(response?.error||'Could not queue this hand. Your screenshot is saved; try again.');
+}
+function cancelBackgroundHandJobs(hand,kinds=['Analysis','Reconstruction','Solve']){
+  const requestIds=kinds.map(kind=>hand['background'+kind+'Id']).filter(Boolean);
+  state.dismissedHandJobIds=[...new Set([...(state.dismissedHandJobIds||[]),...requestIds])].slice(-500);
+  kinds.forEach(kind=>{hand['background'+kind+'Id']=null;});
+  if(kinds.includes('Reconstruction'))hand.reconstructionStatus='';
+  if(requestIds.length)nativeCall('cancelHandJobs',{requestIds});
+}
+function notifyHandJobReady(kind,hand,error=''){
+  const label=kind==='solve'?'GTO solution':'Hand reconstruction';
+  nativeCall('notifyHand',{stage:kind+(error?'_failed':'_ready'),title:label+(error?' needs attention':' ready'),
+    body:error||'Tap to open your hand.',handId:hand.id,view:kind==='solve'?'solverResult':'solverReview'});
 }
 
 const HAND_DB_NAME='innerGame.handImages';
@@ -249,6 +274,13 @@ async function analyzeStoredHand(handId,dataUrl){
   try{
     let contextSession=state.sessions.find(s=>allSessionHands(s).some(h=>h.id===handId));
     if(!contextSession && state.activeSession && allSessionHands(state.activeSession).some(h=>h.id===handId)) contextSession=state.activeSession;
+    if(supportsBackgroundHandJobs()){
+      cancelBackgroundHandJobs(hand,['Analysis']);
+      const requestId=handJobRequestId();hand.backgroundAnalysisId=requestId;save();
+      await enqueueBackgroundHandJob({requestId,kind:'analysis',handId,source:hand.source,capturedAt:hand.capturedAt,sessionId:hand.sessionId,
+        payload:{imageDataUrl:dataUrl,context:{sessionGame:contextSession?.stakes||contextSession?.game||'',sessionRoom:contextSession?.room||''}}});
+      return;
+    }
     const requestBody=JSON.stringify({
       imageDataUrl:dataUrl,
       context:{
@@ -379,6 +411,7 @@ function saveCapturedHand(hand){
   return saved;
 }
 function removeCapturedHand(id){
+  const hand=findHandRecord(id);if(hand)cancelBackgroundHandJobs(hand);
   if(state.activeSession)state.activeSession.hands=allSessionHands(state.activeSession).filter(h=>h.id!==id);
   state.sessions.forEach(s=>{if(Array.isArray(s.hands))s.hands=s.hands.filter(h=>h.id!==id);});
   state.generalHands=generalHands().filter(h=>h.id!==id);
@@ -561,13 +594,69 @@ window.innerGameReceiveNativeAnalysis=(id,dataUrl,analysisJson,capturedAt,sessio
   saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson,capturedAt,sessionId);
   return true;
 };
-window.innerGameOpenHand=(id)=>{
+window.innerGameOpenHand=(id,view='handDetail')=>{
   const hand=findHandRecord(id);
   if(!hand)return false;
   selectedHandId=id;
   handReturnRoute='handsLibrary';
-  navigate('handDetail');
+  if(view==='solverResult'||view==='solverReview')solverReviewHandId=id;
+  navigate(['solverResult','solverReview'].includes(view)?view:'handDetail');
   return true;
+};
+window.innerGameReceiveBackgroundCapture=async(id,dataUrl,capturedAt,sessionId,requestId)=>{
+  if((state.dismissedHandJobIds||[]).includes(requestId))return false;
+  const session=automaticCaptureSession(sessionId,capturedAt);
+  if(!session){nativeCall('ackHandJob',{requestId});nativeCall('ackNativeAnalysis',{id});return false;}
+  let hand=findHandRecord(id);
+  if(!hand){
+    await storeHandImage('hand:'+id,dataUrl);
+    if((state.dismissedHandJobIds||[]).includes(requestId)||!automaticCaptureSession(sessionId,capturedAt))return false;
+    hand=findHandRecord(id)||saveCapturedHand({id,source:'android_auto',sessionId:session.id,capturedAt,imageKey:'hand:'+id,
+      status:'analyzing',title:'Analyzing hand…',description:'Processing in the background.',heroCards:[],board:[],uncertainFields:[],
+      autoCandidate:true,backgroundAnalysisId:requestId});
+  }
+  nativeCall('ackNativeAnalysis',{id});refreshCaptureUi();
+  return Boolean(hand);
+};
+window.innerGameReceiveHandJob=async input=>{
+  const job=typeof input==='string'?JSON.parse(input):input;
+  const requestId=job?.requestId;
+  if(!requestId||!['complete','failed'].includes(job.status))return false;
+  if(backgroundHandDeliveries.has(requestId))return false;
+  backgroundHandDeliveries.add(requestId);
+  try{
+    if((state.dismissedHandJobIds||[]).includes(requestId)){nativeCall('ackHandJob',{requestId});return true;}
+    let hand=findHandRecord(job.handId);
+    if(!hand&&job.kind==='analysis'&&job.source==='android_auto'){
+      await window.innerGameReceiveBackgroundCapture(job.handId,job.payload?.imageDataUrl,job.capturedAt,job.sessionId,requestId);
+      hand=findHandRecord(job.handId);
+    }
+    const field={analysis:'backgroundAnalysisId',reconstruction:'backgroundReconstructionId',solve:'backgroundSolveId'}[job.kind];
+    if(!hand||!field||hand[field]!==requestId){nativeCall('ackHandJob',{requestId});return true;}
+    const result=job.result||{},invalid=job.status==='complete'&&(
+      job.kind==='analysis'?typeof result.isPokerHand!=='boolean':
+      job.kind==='reconstruction'?!result.spot:!result.solution);
+    const failed=job.status==='failed'||invalid,message=invalid?'The result was incomplete. Your hand is saved; tap Retry.':job.error?.message||'Processing failed. Your hand is saved; tap Retry.';
+    if(job.kind==='analysis'){
+      if(!failed&&!result.isPokerHand&&hand.autoCandidate){removeCapturedHand(hand.id);nativeCall('ackHandJob',{requestId});refreshCaptureUi();return true;}
+      const recognized=!failed&&Boolean(result.isPokerHand);
+      Object.assign(hand,failed?{}:result,{id:hand.id,sessionId:hand.sessionId,capturedAt:hand.capturedAt,imageKey:hand.imageKey,
+        title:recognized?normalizeCapturedTitle(result,hand.title):failed?'Captured hand':'Unrecognized screenshot',
+        tournamentName:recognized?cleanVisibleTournamentText(result.tournamentName||result.visibleEventText||''):'',
+        status:failed?'failed':recognized?'ready':'needs_review',reviewNeeded:failed||!recognized,autoCandidate:false,error:failed?message:''});
+    }else if(job.kind==='reconstruction'){
+      hand.reconstructionStatus=failed?'failed':'ready';hand.solverError=failed?message:'';
+      if(!failed){hand.solverSpot=result.spot;hand.solverSpotVersion=7;hand.solverResult=null;hand.solverJob=null;hand.solverStatus='';}
+    }else{
+      hand.solverStatus=failed?'failed':'solved';hand.solverError=failed?message:'';hand.solverJob=null;
+      if(!failed)hand.solverResult=result.solution;
+      const missing=job.error?.payload?.missingFields||job.error?.payload?.missing;
+      if(failed&&Array.isArray(missing)&&hand.solverSpot)hand.solverSpot.missingFields=missing;
+    }
+    hand[field]=null;save();nativeCall('ackHandJob',{requestId});
+    if(['active','handDetail','handsLibrary','sessionHands','solverReview','solverResult'].includes(route))render();
+    return true;
+  }finally{backgroundHandDeliveries.delete(requestId);}
 };
 function captureReview(){
   const h=pendingCapturedHand;if(!h){route='active';return activeSession();}
@@ -777,12 +866,23 @@ async function inspectHandForSolver(id,force=false){
   const hand=findHandRecord(id); if(!hand)return;
   if(solverInspectingHandIds.has(id))return;
   solverReviewHandId=id;
+  if(hand.backgroundReconstructionId&&hand.reconstructionStatus==='pending'&&!force){navigate('solverReview');return;}
   if(hand.solverSpot&&hand.solverSpotVersion>=7&&!force){ navigate('solverReview'); return; }
+  cancelBackgroundHandJobs(hand,['Reconstruction','Solve']);
   hand.solverResult=null;hand.solverJob=null;hand.solverStatus='';
+  if(supportsBackgroundHandJobs()){hand.backgroundReconstructionId=handJobRequestId();hand.reconstructionStatus='pending';}
+  const backgroundId=hand.backgroundReconstructionId;
+  save();
   route='solverReview'; solverInspectingHandIds.add(id); solverDebugAdd(hand,'inspect:start',{force,spotVersion:hand.solverSpotVersion||0}); render();
   try{
     const imageDataUrl=await getHandImage(hand.imageKey);
     if(!imageDataUrl)throw new Error('Screenshot image is missing.');
+    if(backgroundId){
+      if(findHandRecord(id)?.backgroundReconstructionId!==backgroundId)return;
+      await enqueueBackgroundHandJob({requestId:backgroundId,kind:'reconstruction',handId:id,payload:{imageDataUrl,hand:{title:hand.title,
+        gameType:hand.gameType,site:hand.site,stakes:hand.stakes||hand.blinds,heroPosition:hand.heroPosition,heroCards:hand.heroCards,board:hand.board,pot:hand.pot,actionSummary:hand.actionSummary}}});
+      return;
+    }
     const apiBase=HAND_ANALYSIS_API_URL.replace(/\/$/,'');
     let res=await fetch(apiBase+'/solver/inspect',{
       signal:AbortSignal.timeout(30_000),
@@ -827,16 +927,20 @@ async function inspectHandForSolver(id,force=false){
     hand.solverStatus='';
     hand.solverError='';
     save();
+    notifyHandJobReady('reconstruction',hand);
   }catch(error){
     hand.solverError=String(error?.message||error);
+    hand.reconstructionStatus='failed';
     solverDebugAdd(hand,'inspect:error',{message:String(error?.message||error),stack:String(error?.stack||'')});
     save();
+    if(!backgroundId)notifyHandJobReady('reconstruction',hand,hand.solverError);
   }finally{
     solverInspectingHandIds.delete(id);
     if(route==='solverReview'&&solverReviewHandId===id)render();
   }
 }
 function invalidateHandSolver(hand){
+  cancelBackgroundHandJobs(hand);
   hand.solverSpot=null;hand.solverSpotVersion=0;hand.solverResult=null;hand.solverJob=null;hand.solverStatus='';hand.solverError='';
 }
 function collectSolverSpot(){
@@ -859,15 +963,18 @@ function collectSolverSpot(){
   const complete=document.getElementById('solverHistoryComplete');
   if(complete)spot.actionHistoryComplete=complete.checked;
   spot.missingFields=solverMissing({...spot,missingFields:[]});
+  if(JSON.stringify(hand.solverSpot)!==JSON.stringify(spot)){
+    cancelBackgroundHandJobs(hand,['Solve']);hand.solverJob=null;hand.solverResult=null;hand.solverStatus='';
+  }
   hand.solverSpot=spot; save();
   return spot;
 }
 function solverReview(){
   const h=solverHand();
   if(!h){route='handsLibrary';return handsLibrary();}
-  const loading=solverInspectingHandIds.has(h.id);
+  const loading=solverInspectingHandIds.has(h.id)||h.reconstructionStatus==='pending'&&Boolean(h.backgroundReconstructionId);
   if(loading)return appShell(`${header('Review <span class="accent">Spot</span>','Reading the screenshot for solver-ready details.')}
-    <section class="card pad solver-loading-card"><span class="solver-spinner"></span><strong>Reconstructing the hand…</strong><p>Checking positions, stacks, board and every action up to your decision.</p></section>`,'sessions');
+    <section class="card pad solver-loading-card"><span class="solver-spinner"></span><strong>Reconstructing the hand…</strong><p>Checking positions, stacks, board and every action up to your decision.${supportsBackgroundHandJobs()?' You can leave the app. We’ll notify you when the hand is ready.':''}</p></section>`,'sessions');
   if(!h.solverSpot)return appShell(`${header('Review <span class="accent">Spot</span>','We need a complete hand before solving.')}
     <section class="card pad solver-error-card"><strong>Couldn’t prepare this screenshot</strong><p>${esc(h.solverError||'Try reading the screenshot again.')}</p><button class="btn primary" data-reinspect-solver="${esc(h.id)}">Try again</button></section>`,'sessions');
   const s=h.solverSpot,missing=solverMissing(s),ready=missing.length===0;
@@ -1022,13 +1129,19 @@ function solverResult(){
 }
 async function runSolverForHand(id){
   const h=findHandRecord(id);if(!h)return;
-  if(['starting','pending'].includes(h.solverStatus))return;
+  if(h.solverStatus==='starting')return;
   solverReviewHandId=id;
   const spot=collectSolverSpot()||h.solverSpot;
+  if(h.solverStatus==='pending')return;
   const missing=solverMissing(spot);
   if(missing.length){h.solverError='Complete the highlighted hand details first.';save();render();return;}
   h.solverResult=null;h.solverJob=null;h.solverError='';h.solverStatus='starting';solverDebugAdd(h,'solve:start',{spot});save();route='solverResult';render();
   try{
+    if(supportsBackgroundHandJobs()){
+      h.backgroundSolveId=handJobRequestId();h.solverStatus='pending';save();render();
+      await enqueueBackgroundHandJob({requestId:h.backgroundSolveId,kind:'solve',handId:id,payload:{spot}});
+      return;
+    }
     let res=null,json={},lastError=null;
     for(let attempt=0;attempt<4;attempt++){
       try{
@@ -1062,6 +1175,7 @@ async function runSolverForHand(id){
       throw new Error(json.message||json.error||lastError?.message||'Solver request failed.');
     }
     h.solverResult=json.solution;h.solverJob=null;h.solverStatus='solved';save();render();
+    notifyHandJobReady('solve',h);
   }catch(error){
     h.solverStatus='failed';h.solverError=String(error?.message||error);solverDebugAdd(h,'solve:error',{message:String(error?.message||error),stack:String(error?.stack||'')});save();render();
   }
@@ -1114,6 +1228,7 @@ async function pollSolverJob(id){
       current.solverResult=json.solution;current.solverJob=null;current.solverStatus='solved';current.solverError='';solverDebugAdd(current,'poll:complete',{debug:json.debug||null});save();
       if(route==='solverResult'&&solverReviewHandId===id)render();
       captureToast('GTO solution ready ✓');
+      notifyHandJobReady('solve',current);
       return;
     }
   }catch(error){
@@ -1794,6 +1909,7 @@ function bind(){
     const after=JSON.stringify([pendingCapturedHand.heroCards,pendingCapturedHand.board,pendingCapturedHand.position,pendingCapturedHand.pot,pendingCapturedHand.description]);
     if(before!==after)invalidateHandSolver(pendingCapturedHand);
     pendingCapturedHand.title=normalizeCapturedTitle(pendingCapturedHand,pendingCapturedHand.title);
+    cancelBackgroundHandJobs(pendingCapturedHand,['Analysis']);
     pendingCapturedHand.userEdited=true;pendingCapturedHand.reviewNeeded=false;pendingCapturedHand.status='ready';
     save();pendingCapturedHand=null;captureToast('Hand updated ✓');selectedHandId=editedId;navigate('handDetail');
   };
@@ -1802,7 +1918,7 @@ function bind(){
   document.querySelectorAll('[data-review-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.reviewHand);if(pendingCapturedHand)navigate('captureReview');});
   const exp=document.getElementById('exportData'); if(exp)exp.onclick=()=>{const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='inner-game-data.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),500)};
   const seed=document.getElementById('seedDemo'); if(seed)seed.onclick=()=>{seedDemo();save();navigate('insights');};
-  const clear=document.getElementById('clearData'); if(clear)clear.onclick=()=>{if(confirm('Delete all locally stored Inner Game data?')){state.activeSession=null;syncAutoScreenshotWatcher();cancelBreakReminders();localStorage.removeItem(STORAGE_KEY);LEGACY_STORAGE_KEYS.forEach(k=>localStorage.removeItem(k));location.reload();}};
+  const clear=document.getElementById('clearData'); if(clear)clear.onclick=()=>{if(confirm('Delete all locally stored Inner Game data?')){nativeCall('cancelHandJobs',{all:true});state.activeSession=null;state.sessions=[];state.generalHands=[];syncAutoScreenshotWatcher();cancelBreakReminders();localStorage.removeItem(STORAGE_KEY);LEGACY_STORAGE_KEYS.forEach(k=>localStorage.removeItem(k));location.reload();}};
 }
 function seedDemo(){ if(state.sessions.length)return; const rows=[[500,820,8,2,2,8,'Calm'],[500,340,5,7,8,4,'Tilted'],[500,620,7,3,4,7,'Focused'],[500,450,6,5,6,6,'Tense'],[500,760,9,2,2,9,'Calm'],[500,540,8,3,3,8,'Focused']]; rows.forEach((r,i)=>state.sessions.push({id:String(Date.now()+i),date:localDateValue(Date.now()-(rows.length-i)*86400000),startAt:Date.now()-(rows.length-i)*86400000-5400000,endAt:Date.now()-(rows.length-i)*86400000,room:i%2?'GG Poker':'Live Casino',game:'NL100',started:r[0],finished:r[1],pnl:r[1]-r[0],process:r[2],judgment:r[3],tilt:r[4],trust:r[5],state:r[6],note:'Demo session',durationMs:5400000})); }
 
