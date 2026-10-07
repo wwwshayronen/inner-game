@@ -15,6 +15,8 @@ const defaults = {
   activeSession: null
 };
 const state = load();
+let syncedScreenshotSessionId;
+const queuedScreenshotsProcessing = new Set();
 let route = state.activeSession ? 'active' : 'home';
 let breathTimer = null;
 let breathRemaining = (({beginner:3,intermediate:10,advanced:20})[state.prep.breathLevel]||3)*60;
@@ -80,7 +82,7 @@ function load(){
     return raw ? deepMerge(defaults, JSON.parse(raw)) : structuredClone(defaults);
   } catch { return structuredClone(defaults); }
 }
-function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function save(){ syncAutoScreenshotWatcher(); localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 function esc(v=''){ return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function money(v){ const n=Number(v)||0; const sign=n>0?'+':n<0?'-':''; return `${sign}$${Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:0})}`; }
 function normalizeGameName(v=''){ return String(v).trim().replace(/\s+/g,' '); }
@@ -165,6 +167,7 @@ function nativeCall(name,payload={}){
     if(window.InnerGameDesktop){
       if(name==='captureHand'&&typeof window.InnerGameDesktop.captureHand==='function'){ window.InnerGameDesktop.captureHand(); return; }
       if(name==='notifyHand'&&typeof window.InnerGameDesktop.notifyHand==='function'){ window.InnerGameDesktop.notifyHand(payload); return; }
+      if(name==='setAutoScreenshotEnabled'&&typeof window.InnerGameDesktop.setAutoScreenshotEnabled==='function'){ window.InnerGameDesktop.setAutoScreenshotEnabled(payload); return; }
     }
     if(window.webkit?.messageHandlers?.innerGame) window.webkit.messageHandlers.innerGame.postMessage({action:name,...payload});
   }catch{}
@@ -236,7 +239,7 @@ function refreshCaptureUi(){
   if(['active','sessionHands','captureReview','handsLibrary','handDetail'].includes(route))render();
 }
 async function analyzeStoredHand(handId,dataUrl){
-  const hand=findHandRecord(handId);
+  let hand=findHandRecord(handId);
   if(!hand)return;
   hand.status='analyzing';
   hand.error='';
@@ -273,6 +276,8 @@ async function analyzeStoredHand(handId,dataUrl){
       if(attempt+1<maxAttempts) await new Promise(resolve=>setTimeout(resolve,180));
     }
     if(!res?.ok) throw lastError||new Error('Analysis request failed');
+    hand=findHandRecord(handId);
+    if(!hand)return;
     if(!parsed.isPokerHand){
       if(hand.autoCandidate){ removeCapturedHand(hand.id); refreshCaptureUi(); captureToast('Screenshot ignored · not a poker hand'); return; }
       Object.assign(hand,{status:'needs_review',reviewNeeded:true,confidence:Number(parsed.confidence)||0,title:'Unrecognized screenshot',description:'The screenshot is saved, but the poker hand could not be recognized confidently.',uncertainFields:parsed.uncertainFields||[]});
@@ -298,6 +303,8 @@ async function analyzeStoredHand(handId,dataUrl){
     }
   }catch(e){
     console.error(e);
+    hand=findHandRecord(handId);
+    if(!hand)return;
     if(hand.source==='android_auto_pending'){
       hand.status='pending';
       hand.reviewNeeded=false;
@@ -320,11 +327,14 @@ async function analyzeStoredHand(handId,dataUrl){
     notifyHandStatus('failed',hand);
   }
 }
-async function analyzeCapturedScreenshot(dataUrl,source='native'){
+async function analyzeCapturedScreenshot(dataUrl,source='native',captureSessionId=''){
+  if(!isManualHandSource(source)&&(!state.activeSession||captureSessionId&&captureSessionId!==state.activeSession.id))return false;
+  const sessionId=state.activeSession?.id||null;
   const id=crypto.randomUUID?.()||String(Date.now());
   const provisional={
     id,
     source,
+    sessionId,
     capturedAt:Date.now(),
     imageKey:'hand:'+id,
     status:'analyzing',
@@ -341,29 +351,32 @@ async function analyzeCapturedScreenshot(dataUrl,source='native'){
     if(source!=='android_auto') notifyHandStatus('analyzing',provisional);
     const compact=await resizeScreenshot(dataUrl,1120,.74);
     await storeHandImage(provisional.imageKey,compact);
-    saveCapturedHand(provisional);
+    if(!saveCapturedHand(provisional))return false;
     refreshCaptureUi();
     captureToast('Screenshot saved · analyzing…');
     await analyzeStoredHand(id,compact);
+    return true;
   }catch(e){
     console.error(e);
     captureToast('Could not save screenshot.','error');
+    return false;
   }
 }
 function saveCapturedHand(hand){
-  if(state.activeSession){
-    if(!state.activeSession.id) state.activeSession.id=crypto.randomUUID?.()||String(Date.now());
-    const sessionId=state.activeSession.id;
-    state.activeSession.hands=allSessionHands(state.activeSession);
-    const existing=state.activeSession.hands.find(x=>x.id===hand.id);
-    if(existing)Object.assign(existing,hand,{sessionId});
-    else state.activeSession.hands.push({...hand,sessionId,userEdited:Boolean(hand.userEdited)});
-  }else{
-    const existing=generalHands().find(x=>x.id===hand.id);
-    if(existing)Object.assign(existing,hand,{sessionId:null});
-    else generalHands().push({...hand,sessionId:null,userEdited:Boolean(hand.userEdited)});
-  }
+  const explicitSession=Object.prototype.hasOwnProperty.call(hand,'sessionId');
+  const session=explicitSession
+    ?(hand.sessionId===state.activeSession?.id?state.activeSession:state.sessions.find(s=>s.id===hand.sessionId))
+    :state.activeSession;
+  if(explicitSession&&hand.sessionId&&!session)return false;
+  if(session&&!session.id)session.id=crypto.randomUUID?.()||String(Date.now());
+  const sessionId=session?.id||null;
+  const hands=session?(session.hands=allSessionHands(session)):generalHands();
+  const existing=hands.find(x=>x.id===hand.id);
+  const saved=existing||{...hand,sessionId,userEdited:Boolean(hand.userEdited)};
+  if(existing)Object.assign(existing,hand,{sessionId});
+  else hands.push(saved);
   save();
+  return saved;
 }
 function removeCapturedHand(id){
   if(state.activeSession)state.activeSession.hands=allSessionHands(state.activeSession).filter(h=>h.id!==id);
@@ -371,7 +384,18 @@ function removeCapturedHand(id){
   state.generalHands=generalHands().filter(h=>h.id!==id);
   save();
 }
-async function saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson){
+function automaticCaptureSession(sessionId,capturedAt){
+  const sessions=[state.activeSession,...state.sessions].filter(Boolean);
+  const timestamp=Number(capturedAt);
+  if(!Number.isFinite(timestamp)||timestamp<=0)return null;
+  return sessions.find(session=>{
+    const start=Number(session.captureStartedAt||session.startedAt||session.startAt),end=session===state.activeSession?Date.now():Number(session.captureEndedAt||session.endAt);
+    return (!sessionId||session.id===sessionId)&&start>0&&timestamp>=start&&timestamp<=end;
+  })||null;
+}
+async function saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson,capturedAt,sessionId){
+  const existing=findHandRecord(id),session=automaticCaptureSession(sessionId||existing?.sessionId,capturedAt||existing?.capturedAt);
+  if(!session){nativeCall('ackNativeAnalysis',{id});return false;}
   let parsed={};
   try{ parsed=JSON.parse(analysisJson||'{}'); }catch{ parsed={__error:'Invalid analysis response'}; }
 
@@ -379,7 +403,8 @@ async function saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson){
   const hand={
     id,
     source:'android_auto',
-    capturedAt:Date.now(),
+    sessionId:session.id,
+    capturedAt:Number(capturedAt)||existing?.capturedAt||Date.now(),
     imageKey:'hand:'+id,
     status:failed?'failed':'ready',
     reviewNeeded:failed,
@@ -421,13 +446,16 @@ async function saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson){
   }
 }
 
-window.innerGameReceiveScreenshot=(dataUrl,source='native')=>analyzeCapturedScreenshot(dataUrl,source);
+window.innerGameReceiveScreenshot=(dataUrl,source='native',sessionId='')=>analyzeCapturedScreenshot(dataUrl,source,sessionId);
 
-async function processQueuedScreenshot(id,dataUrl,capturedAt){
+async function processQueuedScreenshot(id,dataUrl,capturedAt,sessionId=''){
   const existing=findHandRecord(id);
-  const hand=existing||{
+  const session=automaticCaptureSession(sessionId||existing?.sessionId,capturedAt);
+  if(!session){nativeCall('ackNativeAnalysis',{id});return true;}
+  let hand=existing||{
     id,
     source:'android_auto_pending',
+    sessionId:session.id,
     capturedAt:Number(capturedAt)||Date.now(),
     imageKey:'hand:'+id,
     status:'analyzing',
@@ -444,7 +472,8 @@ async function processQueuedScreenshot(id,dataUrl,capturedAt){
   try{
     const compact=await resizeScreenshot(dataUrl,1120,.74);
     await storeHandImage(hand.imageKey,compact);
-    saveCapturedHand(hand);
+    hand=saveCapturedHand({...hand,sessionId:session.id});
+    if(!hand){nativeCall('ackNativeAnalysis',{id});return true;}
 
     // Foreground/WebView networking is the reliable path on this device.
     // Keep this silent: no system "analysis failed" notification for temporary connectivity.
@@ -475,6 +504,8 @@ async function processQueuedScreenshot(id,dataUrl,capturedAt){
       if(attempt<2) await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));
     }
 
+    hand=findHandRecord(id);
+    if(!hand){nativeCall('ackNativeAnalysis',{id});return true;}
     if(!res?.ok){
       hand.status='pending';
       hand.reviewNeeded=false;
@@ -508,6 +539,8 @@ async function processQueuedScreenshot(id,dataUrl,capturedAt){
     return true;
   }catch(error){
     console.error(error);
+    hand=findHandRecord(id);
+    if(!hand)return false;
     hand.status='pending';
     hand.reviewNeeded=false;
     hand.autoCandidate=true;
@@ -517,13 +550,15 @@ async function processQueuedScreenshot(id,dataUrl,capturedAt){
   }
 }
 
-window.innerGameReceiveQueuedScreenshot=(id,dataUrl,capturedAt)=>{
-  processQueuedScreenshot(id,dataUrl,capturedAt);
+window.innerGameReceiveQueuedScreenshot=(id,dataUrl,capturedAt,sessionId='')=>{
+  if(queuedScreenshotsProcessing.has(id))return true;
+  queuedScreenshotsProcessing.add(id);
+  processQueuedScreenshot(id,dataUrl,capturedAt,sessionId).finally(()=>queuedScreenshotsProcessing.delete(id));
   return true;
 };
 
-window.innerGameReceiveNativeAnalysis=(id,dataUrl,analysisJson)=>{
-  saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson);
+window.innerGameReceiveNativeAnalysis=(id,dataUrl,analysisJson,capturedAt,sessionId='')=>{
+  saveNativeAnalyzedScreenshot(id,dataUrl,analysisJson,capturedAt,sessionId);
   return true;
 };
 window.innerGameOpenHand=(id)=>{
@@ -1168,7 +1203,13 @@ async function retryCapturedHand(id){
 }
 function triggerNativeCapture(){nativeCall('captureHand',{});}
 
-function syncAutoScreenshotWatcher(){nativeCall('setAutoScreenshotEnabled',{enabled:true});}
+function syncAutoScreenshotWatcher(){
+  if(state.activeSession&&!state.activeSession.id)state.activeSession.id=crypto.randomUUID?.()||String(Date.now());
+  const sessionId=state.activeSession?.id||'';
+  if(sessionId===syncedScreenshotSessionId)return;
+  syncedScreenshotSessionId=sessionId;
+  nativeCall('setAutoScreenshotEnabled',{enabled:Boolean(sessionId),sessionId,startedAt:state.activeSession?.startedAt||0});
+}
 function scheduleBreakReminders(){ if(!state.activeSession)return; nativeCall('scheduleBreakReminders',{startedAt:state.activeSession.startedAt, intervalMinutes:60, breakMinutes:5}); }
 function cancelBreakReminders(){ nativeCall('cancelBreakReminders'); }
 
@@ -1692,7 +1733,7 @@ function bind(){
     const room=normalizeRoomName(fd.get('room')); rememberGame(fd.get('game')); rememberRoom(room);
     const completedSessionId=state.activeSession?.id||crypto.randomUUID?.()||String(Date.now());
     const completedHands=allSessionHands(state.activeSession).map(h=>({...h,sessionId:completedSessionId}));
-    state.sessions.push({id:completedSessionId,date:localDateValue(startAt),startAt,endAt,room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,state:scoreState,note:fd.get('note'),bestDecision:fd.get('bestDecision'),toughestSpot:fd.get('toughestSpot'),takeaway:fd.get('takeaway'),prep:mental||null,durationMs:endAt-startAt,hands:completedHands});
+    state.sessions.push({id:completedSessionId,date:localDateValue(startAt),startAt,endAt,captureStartedAt:state.activeSession?.startedAt||startAt,captureEndedAt:Date.now(),room,game:normalizeGameName(fd.get('game')),started,finished,pnl:finished-started,process,judgment,tilt,trust,state:scoreState,note:fd.get('note'),bestDecision:fd.get('bestDecision'),toughestSpot:fd.get('toughestSpot'),takeaway:fd.get('takeaway'),prep:mental||null,durationMs:endAt-startAt,hands:completedHands});
     state.activeSession=null; save(); cancelBreakReminders(); editingSessionId=completedSessionId; navigate('sessionDetail');
   };
   const sound=document.getElementById('breathSound'); if(sound)sound.onclick=()=>{breathSoundEnabled=!breathSoundEnabled; if(breathSoundEnabled)ensureBreathAudio(); render();};
@@ -1761,7 +1802,7 @@ function bind(){
   document.querySelectorAll('[data-review-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.reviewHand);if(pendingCapturedHand)navigate('captureReview');});
   const exp=document.getElementById('exportData'); if(exp)exp.onclick=()=>{const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='inner-game-data.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),500)};
   const seed=document.getElementById('seedDemo'); if(seed)seed.onclick=()=>{seedDemo();save();navigate('insights');};
-  const clear=document.getElementById('clearData'); if(clear)clear.onclick=()=>{if(confirm('Delete all locally stored Inner Game data?')){cancelBreakReminders();localStorage.removeItem(STORAGE_KEY);LEGACY_STORAGE_KEYS.forEach(k=>localStorage.removeItem(k));location.reload();}};
+  const clear=document.getElementById('clearData'); if(clear)clear.onclick=()=>{if(confirm('Delete all locally stored Inner Game data?')){state.activeSession=null;syncAutoScreenshotWatcher();cancelBreakReminders();localStorage.removeItem(STORAGE_KEY);LEGACY_STORAGE_KEYS.forEach(k=>localStorage.removeItem(k));location.reload();}};
 }
 function seedDemo(){ if(state.sessions.length)return; const rows=[[500,820,8,2,2,8,'Calm'],[500,340,5,7,8,4,'Tilted'],[500,620,7,3,4,7,'Focused'],[500,450,6,5,6,6,'Tense'],[500,760,9,2,2,9,'Calm'],[500,540,8,3,3,8,'Focused']]; rows.forEach((r,i)=>state.sessions.push({id:String(Date.now()+i),date:localDateValue(Date.now()-(rows.length-i)*86400000),startAt:Date.now()-(rows.length-i)*86400000-5400000,endAt:Date.now()-(rows.length-i)*86400000,room:i%2?'GG Poker':'Live Casino',game:'NL100',started:r[0],finished:r[1],pnl:r[1]-r[0],process:r[2],judgment:r[3],tilt:r[4],trust:r[5],state:r[6],note:'Demo session',durationMs:5400000})); }
 

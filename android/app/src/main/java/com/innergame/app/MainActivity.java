@@ -79,7 +79,16 @@ public final class MainActivity extends Activity {
     private String pendingScreenshotDataUrl;
     private String pendingHandId;
     private String pendingHandNotificationPayload;
-    private boolean autoScreenshotEnabled = true;
+    private static final class ScreenshotSession {
+        final String id;
+        final long startedAt;
+        ScreenshotSession(String id, long startedAt) {
+            this.id = id;
+            this.startedAt = startedAt;
+        }
+    }
+    // No observer is enabled until the WebView supplies an active session.
+    private volatile ScreenshotSession screenshotSession;
     private boolean capturePermissionPromptedThisLaunch = false;
     private boolean notificationPermissionPromptedThisLaunch = false;
     private ContentObserver screenshotObserver;
@@ -247,7 +256,7 @@ public final class MainActivity extends Activity {
     }
 
     private void ensureCapturePermissionsOnOpen() {
-        if (!autoScreenshotEnabled) return;
+        if (screenshotSession == null) return;
         if (hasMediaReadPermission()) {
             registerScreenshotObserver();
             requestNotificationPermissionIfNeeded();
@@ -302,23 +311,42 @@ public final class MainActivity extends Activity {
                 .show();
     }
 
-    private void setAutoScreenshotEnabled(boolean enabled) {
-        autoScreenshotEnabled = enabled;
-        if (!enabled) {
-            unregisterScreenshotObserver();
+    private void setAutoScreenshotEnabled(boolean enabled, String sessionId, long startedAt) {
+        ScreenshotSession current = screenshotSession;
+        if (enabled && current != null && current.id.equals(sessionId) && current.startedAt == startedAt) {
+            ensureCapturePermissionsOnOpen();
             return;
         }
-        ensureCapturePermissionsOnOpen();
+        screenshotSession = null;
+        unregisterScreenshotObserver();
+        if (enabled && !sessionId.isEmpty() && startedAt > 0L) {
+            screenshotSession = new ScreenshotSession(sessionId, startedAt);
+            ensureCapturePermissionsOnOpen();
+        }
+    }
+
+    private long newestImageMediaId() {
+        try (Cursor cursor = getContentResolver().query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                new String[]{MediaStore.Images.Media._ID}, null, null,
+                MediaStore.Images.Media._ID + " DESC"
+        )) {
+            if (cursor != null && cursor.moveToFirst()) return cursor.getLong(0);
+        } catch (Exception ignored) {}
+        return -1L;
     }
 
     private void registerScreenshotObserver() {
-        if (!autoScreenshotEnabled || screenshotObserver != null || !hasMediaReadPermission()) return;
+        final ScreenshotSession session = screenshotSession;
+        if (session == null || screenshotObserver != null || !hasMediaReadPermission()) return;
+        // Do not pick up screenshots taken before this session's watcher starts.
+        final long minimumMediaId = newestImageMediaId();
         screenshotObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
             @Override
             public void onChange(boolean selfChange, Uri uri) {
                 super.onChange(selfChange, uri);
-                if (!autoScreenshotEnabled || uri == null) return;
-                inspectScreenshotUri(uri);
+                if (screenshotSession != session || uri == null) return;
+                inspectScreenshotUri(uri, session, minimumMediaId);
             }
         };
         getContentResolver().registerContentObserver(
@@ -340,7 +368,7 @@ public final class MainActivity extends Activity {
                 || hay.contains("screenshots") || hay.contains("screencapture");
     }
 
-    private Uri resolveRecentScreenshotUri(Uri changedUri) {
+    private Uri resolveRecentScreenshotUri(Uri changedUri, ScreenshotSession session, long minimumMediaId) {
         String[] projection = Build.VERSION.SDK_INT >= 29
                 ? new String[]{
                         MediaStore.Images.Media._ID,
@@ -368,6 +396,7 @@ public final class MainActivity extends Activity {
                 String name = cursor.getString(1);
                 String relativePath = Build.VERSION.SDK_INT >= 29 ? cursor.getString(2) : "";
                 long dateAddedSeconds = cursor.getLong(Build.VERSION.SDK_INT >= 29 ? 3 : 2);
+                if (id <= minimumMediaId || dateAddedSeconds > 0 && dateAddedSeconds < session.startedAt / 1000L) continue;
                 if (!looksLikeScreenshot(name, relativePath)) continue;
                 if (dateAddedSeconds > 0 && Math.abs((System.currentTimeMillis() / 1000L) - dateAddedSeconds) > 30L) continue;
                 return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
@@ -387,8 +416,11 @@ public final class MainActivity extends Activity {
             int scanned = 0;
             while (cursor.moveToNext() && scanned++ < 8) {
                 long id = cursor.getLong(0);
+                if (id <= minimumMediaId) continue;
                 String name = cursor.getString(1);
                 String relativePath = Build.VERSION.SDK_INT >= 29 ? cursor.getString(2) : "";
+                long dateAddedSeconds = cursor.getLong(Build.VERSION.SDK_INT >= 29 ? 3 : 2);
+                if (dateAddedSeconds > 0 && dateAddedSeconds < session.startedAt / 1000L) continue;
                 if (looksLikeScreenshot(name, relativePath)) {
                     return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
                 }
@@ -436,9 +468,10 @@ public final class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
-    private void inspectScreenshotUri(Uri changedUri) {
-        final Uri screenshotUri = resolveRecentScreenshotUri(changedUri);
-        if (screenshotUri == null) return;
+    private void inspectScreenshotUri(Uri changedUri, ScreenshotSession session, long minimumMediaId) {
+        if (screenshotSession != session) return;
+        final Uri screenshotUri = resolveRecentScreenshotUri(changedUri, session, minimumMediaId);
+        if (screenshotUri == null || screenshotSession != session) return;
 
         final long mediaId = mediaId(screenshotUri);
         final String uriText = screenshotUri.toString();
@@ -467,7 +500,7 @@ public final class MainActivity extends Activity {
                 // Background capture is intentionally offline-first. Android only persists
                 // the screenshot here; the proven WebView analysis path runs next time
                 // Inner Game is foregrounded.
-                persistQueuedScreenshot(captureId, dataUrl);
+                persistQueuedScreenshot(captureId, dataUrl, now, session.id);
                 logCaptureDiagnostic(captureId, "QUEUED", "chars=" + dataUrl.length());
                 notifyAutoCaptureQueued(captureId);
 
@@ -618,12 +651,13 @@ public final class MainActivity extends Activity {
     }
 
 
-    private void persistQueuedScreenshot(String captureId, String dataUrl) throws Exception {
+    private void persistQueuedScreenshot(String captureId, String dataUrl, long capturedAt, String sessionId) throws Exception {
         JSONObject pending = new JSONObject();
         pending.put("id", captureId);
         pending.put("dataUrl", dataUrl);
         pending.put("status", "captured_pending");
-        pending.put("capturedAt", System.currentTimeMillis());
+        pending.put("capturedAt", capturedAt);
+        pending.put("sessionId", sessionId);
         byte[] bytes = pending.toString().getBytes(StandardCharsets.UTF_8);
         try (FileOutputStream output = new FileOutputStream(pendingHandFile(captureId))) {
             output.write(bytes);
@@ -649,12 +683,13 @@ public final class MainActivity extends Activity {
                 String captureId = pending.getString("id");
                 String dataUrl = pending.getString("dataUrl");
                 long capturedAt = pending.optLong("capturedAt", System.currentTimeMillis());
+                String sessionId = pending.optString("sessionId", "");
 
                 webView.post(() -> webView.evaluateJavascript(
                         "(function(){if(window.innerGameReceiveQueuedScreenshot){window.innerGameReceiveQueuedScreenshot(" +
                                 JSONObject.quote(captureId) + "," +
                                 JSONObject.quote(dataUrl) + "," +
-                                capturedAt +
+                                capturedAt + "," + JSONObject.quote(sessionId) +
                                 ");return true;}return false;})()",
                         null
                 ));
@@ -724,12 +759,14 @@ public final class MainActivity extends Activity {
                 String dataUrl = pending.getString("dataUrl");
                 String analysisJson = pending.optString("analysisJson", "");
                 if (analysisJson.isEmpty()) continue;
+                long capturedAt = pending.optLong("capturedAt", file.lastModified());
+                String sessionId = pending.optString("sessionId", "");
 
                 webView.post(() -> webView.evaluateJavascript(
                         "(function(){if(window.innerGameReceiveNativeAnalysis){window.innerGameReceiveNativeAnalysis(" +
                                 JSONObject.quote(captureId) + "," +
                                 JSONObject.quote(dataUrl) + "," +
-                                JSONObject.quote(analysisJson) +
+                                JSONObject.quote(analysisJson) + "," + capturedAt + "," + JSONObject.quote(sessionId) +
                                 ");return true;}return false;})()",
                         null
                 ));
@@ -875,6 +912,7 @@ public final class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == MEDIA_PERMISSION_REQUEST) {
+            if (screenshotSession == null) return;
             if (hasMediaReadPermission()) {
                 registerScreenshotObserver();
                 requestNotificationPermissionIfNeeded();
@@ -1079,10 +1117,19 @@ public final class MainActivity extends Activity {
 
         @JavascriptInterface
         public void setAutoScreenshotEnabled(String payload) {
-            boolean enabled = true;
-            try { enabled = new JSONObject(payload).optBoolean("enabled", true); } catch (Exception ignored) {}
+            boolean enabled = false;
+            String sessionId = "";
+            long startedAt = 0L;
+            try {
+                JSONObject config = new JSONObject(payload);
+                enabled = config.optBoolean("enabled", false);
+                sessionId = config.optString("sessionId", "");
+                startedAt = config.optLong("startedAt", 0L);
+            } catch (Exception ignored) {}
             final boolean finalEnabled = enabled;
-            runOnUiThread(() -> MainActivity.this.setAutoScreenshotEnabled(finalEnabled));
+            final String finalSessionId = sessionId;
+            final long finalStartedAt = startedAt;
+            runOnUiThread(() -> MainActivity.this.setAutoScreenshotEnabled(finalEnabled, finalSessionId, finalStartedAt));
         }
 
         @JavascriptInterface
@@ -1114,6 +1161,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        screenshotSession = null;
         unregisterScreenshotObserver();
         if (webView != null) {
             webView.removeJavascriptInterface("InnerGameNative");
