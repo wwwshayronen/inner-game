@@ -107,6 +107,20 @@ test('deleting a pending auto-captured hand prevents it from reappearing on comp
   assert.equal(app.run('allHandsLibrary().length'),0);assert.equal(app.calls.images.length,0);
 });
 
+test('overlapping native image imports cannot overwrite a completed analysis',async()=>{
+  const app=client(),now=Date.now();app.context.now=now;app.context.releases=[];
+  app.run("state.activeSession={id:'active',startedAt:now-1000,hands:[]};storeHandImage=()=>new Promise(resolve=>releases.push(resolve))");
+  const first=app.run("window.innerGameReceiveBackgroundCapture('auto','image',now-500,'active','auto-job')");
+  const second=app.run("window.innerGameReceiveBackgroundCapture('auto','image',now-500,'active','auto-job')");
+  app.context.releases[0]();await first;
+  await deliver(app,{requestId:'auto-job',handId:'auto',kind:'analysis',status:'complete',result:{isPokerHand:true,title:'Completed QQ',heroCards:['Qs','Qh']}});
+  app.context.releases[1]();await second;
+  assert.equal(app.run('findHandRecord("auto").status'),'ready');
+  assert.equal(app.run('findHandRecord("auto").backgroundAnalysisId'),null);
+  assert.equal(app.run('findHandRecord("auto").title'),'Completed QQ');
+  assert.equal(app.run('allHandsLibrary().length'),1);
+});
+
 test('notification links open the matching hand and the requested reconstruction or solver screen',()=>{
   const app=client();addHand(app);app.run('navigate=view=>{route=view}');
   assert.equal(app.run('window.innerGameOpenHand("hand","solverResult")'),true);

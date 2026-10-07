@@ -611,7 +611,7 @@ window.innerGameReceiveBackgroundCapture=async(id,dataUrl,capturedAt,sessionId,r
   if(!hand){
     await storeHandImage('hand:'+id,dataUrl);
     if((state.dismissedHandJobIds||[]).includes(requestId)||!automaticCaptureSession(sessionId,capturedAt))return false;
-    hand=saveCapturedHand({id,source:'android_auto',sessionId:session.id,capturedAt,imageKey:'hand:'+id,
+    hand=findHandRecord(id)||saveCapturedHand({id,source:'android_auto',sessionId:session.id,capturedAt,imageKey:'hand:'+id,
       status:'analyzing',title:'Analyzing hand…',description:'Processing in the background.',heroCards:[],board:[],uncertainFields:[],
       autoCandidate:true,backgroundAnalysisId:requestId});
   }
