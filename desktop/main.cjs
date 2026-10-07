@@ -125,7 +125,7 @@ function createWindow() {
     height: 820,
     minWidth: 900,
     minHeight: 650,
-    backgroundColor: '#050607',
+    backgroundColor: '#0b1320',
     title: 'Inner Game',
     show: false,
     autoHideMenuBar: true,

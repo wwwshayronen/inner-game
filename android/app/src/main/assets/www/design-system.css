@@ -221,3 +221,6 @@ body{background:var(--bg)}
 .hand-progress-step span{background:var(--surface-input);border-color:var(--line)}.hand-progress-step.active span{background:var(--accent);color:#09221b}
 .range-pills button{font-size:11px;min-height:38px;background:var(--surface-input);color:var(--muted);border:1px solid var(--line)}.range-pills button.active{background:var(--surface-raised);border-color:#3b605d;color:var(--accent)}
 @media(max-width:420px){.card:has(.confidence-row)>.row{flex-wrap:wrap;gap:16px}.confidence-row{width:100%;justify-content:space-between}.confidence{width:42px;height:42px}}
+
+.app-shell{background:transparent}
+.btn.secondary.danger-text{color:var(--danger)}

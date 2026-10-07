@@ -190,7 +190,10 @@ public final class MainActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != HAND_FILE_REQUEST || handFileCallback == null) return;
-        handFileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+        // ACTION_OPEN_DOCUMENT is intentionally single-selection; cancelled or empty results
+        // must also release the WebView callback so another screenshot can be chosen.
+        Uri selected = resultCode == RESULT_OK && data != null ? data.getData() : null;
+        handFileCallback.onReceiveValue(selected == null ? null : new Uri[]{selected});
         handFileCallback = null;
     }
 
