@@ -13,7 +13,10 @@ import android.os.Build;
 import org.json.JSONObject;
 
 final class HandJobNotifications {
-    private static final String CHANNEL = "hand_results_v1";
+    // Channel importance is immutable after creation. Use a new result channel
+    // so existing installs get visible completion alerts as well as new ones.
+    private static final String RESULTS_CHANNEL = "hand_results_v2";
+    private static final String PROCESSING_CHANNEL = "hand_processing_v1";
     private HandJobNotifications() {}
     static int progressId(String id) { return 12000 + (id.hashCode() & 0x3fffffff); }
     static Notification notification(Context context, JSONObject job, boolean ready) {
@@ -35,12 +38,14 @@ final class HandJobNotifications {
                 .putExtra("handId", handId).putExtra("handView", view);
         PendingIntent pending = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         NotificationManager manager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        String channelId = ready ? RESULTS_CHANNEL : PROCESSING_CHANNEL;
         if (Build.VERSION.SDK_INT >= 26 && manager != null) {
-            NotificationChannel channel = new NotificationChannel(CHANNEL, "Hand results", NotificationManager.IMPORTANCE_DEFAULT);
-            channel.setDescription("Completed solver results and reconstructed poker hands.");
+            NotificationChannel channel = new NotificationChannel(channelId, ready ? "Hand results" : "Hand processing",
+                    ready ? NotificationManager.IMPORTANCE_HIGH : NotificationManager.IMPORTANCE_LOW);
+            channel.setDescription(ready ? "Completed solver results and reconstructed poker hands." : "Active hand reconstruction and solving in the background.");
             manager.createNotificationChannel(channel);
         }
-        return new Notification.Builder(context, CHANNEL)
+        return new Notification.Builder(context, channelId)
                 .setSmallIcon(android.R.drawable.ic_menu_info_details)
                 .setContentTitle(title).setContentText(body).setStyle(new Notification.BigTextStyle().bigText(body))
                 .setContentIntent(pending).setAutoCancel(ready).setOngoing(!ready).setOnlyAlertOnce(!ready)

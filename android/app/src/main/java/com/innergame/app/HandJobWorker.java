@@ -1,6 +1,9 @@
 package com.innergame.app;
 
 import android.content.Context;
+import android.content.pm.ServiceInfo;
+import android.os.Build;
+import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.work.ForegroundInfo;
 import androidx.work.Worker;
@@ -20,7 +23,11 @@ public class HandJobWorker extends Worker {
         try { job = HandJobStore.read(getApplicationContext(), getInputData().getString("requestId")); }
         catch (Exception error) { job = null; }
         if (job == null) job = new JSONObject();
-        return new ForegroundInfo(HandJobNotifications.progressId(job.optString("requestId")), HandJobNotifications.notification(getApplicationContext(), job, false));
+        int id = HandJobNotifications.progressId(job.optString("requestId"));
+        android.app.Notification notification = HandJobNotifications.notification(getApplicationContext(), job, false);
+        return Build.VERSION.SDK_INT >= 29
+                ? new ForegroundInfo(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                : new ForegroundInfo(id, notification);
     }
     private static final class Response {
         final int status; final JSONObject body;
@@ -46,6 +53,7 @@ public class HandJobWorker extends Worker {
     }
     @NonNull @Override public Result doWork() {
         Context context=getApplicationContext();String id=getInputData().getString("requestId");
+        String stage="read";
         try {
             JSONObject job=HandJobStore.read(context,id);
             if(job==null||!"pending".equals(job.optString("status")))return Result.success();
@@ -62,8 +70,14 @@ public class HandJobWorker extends Worker {
                 if(HandJobStore.write(context,job,false))HandJobNotifications.show(context,job,true);
                 return Result.success();
             }
-            HandJobNotifications.show(context,job,false);
+            // getForegroundInfo() alone only promotes expedited work below API
+            // 31. Explicitly promote on every Android version and await the
+            // ongoing service before any network request can outlive the UI.
+            stage="foreground";
+            setForegroundAsync(getForegroundInfo()).get();
+            if(isStopped()||HandJobStore.read(context,id)==null)return Result.success();
             if(job.optString("serverJobId").isEmpty()) {
+                stage="submit";
                 JSONObject request=new JSONObject();request.put("requestId",id);request.put("kind",job.getString("kind"));request.put("payload",job.getJSONObject("payload"));
                 Response response=post(base,"/hand-jobs/start",request);
                 if(response.status>=500||response.status==429)return Result.retry();
@@ -71,6 +85,7 @@ public class HandJobWorker extends Worker {
                 else { job.put("serverJobId",response.body.getString("jobId"));if(!HandJobStore.write(context,job,false))return Result.success(); }
             }
             long deadline=System.currentTimeMillis()+8*60_000L;
+            stage="poll";
             while("pending".equals(job.optString("status"))&&!isStopped()&&System.currentTimeMillis()<deadline) {
                 if(HandJobStore.read(context,id)==null)return Result.success();
                 Response response=post(base,"/hand-jobs/poll",new JSONObject().put("jobId",job.getString("serverJobId")));
@@ -91,6 +106,14 @@ public class HandJobWorker extends Worker {
             if(HandJobStore.write(context,job,false))HandJobNotifications.show(context,job,true);
             return Result.success();
         } catch (Exception error) {
+            Log.w("InnerGameHandJob", "Job " + id + " will retry at " + stage + ": " + error.getClass().getSimpleName());
+            try {
+                JSONObject pending=HandJobStore.read(context,id);
+                if(pending!=null&&"pending".equals(pending.optString("status"))) {
+                    pending.put("lastAttemptStage",stage);pending.put("lastAttemptAt",System.currentTimeMillis());
+                    HandJobStore.write(context,pending,false);
+                }
+            } catch (Exception ignored) {}
             // Offline work remains in WorkManager and in its private file. Retry
             // the same request ID rather than scheduling another paid solve.
             return Result.retry();

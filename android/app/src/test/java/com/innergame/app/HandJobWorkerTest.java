@@ -2,13 +2,19 @@ package com.innergame.app;
 
 import android.app.Notification;
 import android.app.NotificationManager;
+import android.Manifest;
+import android.app.Application;
+import android.content.pm.ServiceInfo;
 import android.content.Context;
 import android.content.Intent;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.work.Data;
 import androidx.work.ListenableWorker;
+import androidx.work.ForegroundInfo;
+import androidx.work.impl.utils.futures.SettableFuture;
 import androidx.work.WorkerParameters;
 import androidx.work.testing.TestWorkerBuilder;
+import androidx.work.testing.TestListenableWorkerBuilder;
 import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
@@ -31,6 +37,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import javax.net.ssl.HttpsURLConnection;
 import static org.junit.Assert.*;
 
@@ -40,6 +49,11 @@ public class HandJobWorkerTest {
     private static final ArrayDeque<Reply> replies = new ArrayDeque<>();
     private static final List<String> routes = new ArrayList<>();
     private static final List<JSONObject> requests = new ArrayList<>();
+    private static final List<ForegroundInfo> foreground = new ArrayList<>();
+    private static RuntimeException foregroundFailure;
+    private static Runnable onForeground;
+    private static SettableFuture<Void> heldPromotion;
+    private static CountDownLatch promotionRequested;
     private Context context;
     private ExecutorService executor;
     private NotificationManager notifications;
@@ -54,6 +68,7 @@ public class HandJobWorkerTest {
         Connection(URL url) { super(url); }
         @Override public OutputStream getOutputStream() { return output; }
         @Override public int getResponseCode() throws IOException {
+            if (foreground.isEmpty() || heldPromotion!=null&&!heldPromotion.isDone()) throw new AssertionError("Network processing started without an active foreground service");
             routes.add(url.getPath());
             try { requests.add(new JSONObject(new String(output.toByteArray(), StandardCharsets.UTF_8))); }
             catch (Exception error) { throw new IOException(error); }
@@ -79,9 +94,14 @@ public class HandJobWorkerTest {
         executor = Executors.newSingleThreadExecutor();
         notifications = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         HandJobStore.removeAll(context);
-        notifications.cancelAll();replies.clear();routes.clear();requests.clear();
+        notifications.cancelAll();replies.clear();routes.clear();requests.clear();foreground.clear();
+        foregroundFailure=null;onForeground=null;heldPromotion=null;promotionRequested=null;
+        Shadows.shadowOf((Application)context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS);
     }
-    @After public void cleanup() { HandJobStore.removeAll(context); executor.shutdownNow(); }
+    @After public void cleanup() {
+        if(heldPromotion!=null&&!heldPromotion.isDone())heldPromotion.setException(new IllegalStateException("Test finished"));
+        HandJobStore.removeAll(context);executor.shutdownNow();
+    }
     private JSONObject save(String id, String kind) throws Exception {
         JSONObject job = new JSONObject().put("requestId",id).put("handId","hand-one").put("kind",kind)
                 .put("status","pending").put("createdAt",System.currentTimeMillis())
@@ -89,8 +109,20 @@ public class HandJobWorkerTest {
         HandJobStore.write(context,job,true);return job;
     }
     private ListenableWorker.Result run(String id) {
-        HandJobWorker worker = TestWorkerBuilder.from(context,TestHandJobWorker.class,executor)
-                .setInputData(new Data.Builder().putString("requestId",id).build()).build();
+        TestListenableWorkerBuilder<TestHandJobWorker> builder = TestWorkerBuilder.from(context,TestHandJobWorker.class,executor)
+                .setInputData(new Data.Builder().putString("requestId",id).build());
+        builder.setForegroundUpdater((ctx,uuid,info)->{
+            SettableFuture<Void> future=SettableFuture.create();
+            if(heldPromotion!=null){foreground.add(info);promotionRequested.countDown();return heldPromotion;}
+            if(foregroundFailure!=null)future.setException(foregroundFailure);
+            else {
+                foreground.add(info);notifications.notify(info.getNotificationId(),info.getNotification());
+                if(onForeground!=null)onForeground.run();
+                future.set(null);
+            }
+            return future;
+        });
+        HandJobWorker worker=builder.build();
         assertEquals(1,worker.getInputData().getKeyValueMap().size());
         return worker.doWork();
     }
@@ -167,5 +199,48 @@ public class HandJobWorkerTest {
         HandJobNotifications.show(context,job,true);assertNull(ready("analysis"));
         job.put("source","manual");HandJobNotifications.show(context,job,true);opens(ready("analysis"),"handDetail");
         assertEquals("Hand analysis needs attention",ready("analysis").extras.getString(Notification.EXTRA_TITLE));
+    }
+
+    @Test @Config(sdk = 35) public void modernAndroidPromotesPollingBeforeNetworkAndNotifiesWithoutActivity() throws Exception {
+        JSONObject job=save("background-api35","solve");job.put("serverJobId","already-submitted");HandJobStore.write(context,job,false);
+        reply(200,"{\"status\":\"complete\",\"result\":{\"solution\":{}}}");
+        assertEquals(ListenableWorker.Result.success(),run("background-api35"));
+        assertEquals(1,foreground.size());
+        assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,foreground.get(0).getForegroundServiceType());
+        assertEquals("hand_processing_v1",foreground.get(0).getNotification().getChannelId());
+        assertEquals(NotificationManager.IMPORTANCE_LOW,notifications.getNotificationChannel("hand_processing_v1").getImportance());
+        opens(ready("solve"),"solverResult");
+        assertEquals("hand_results_v2",ready("solve").getChannelId());
+        assertEquals(NotificationManager.IMPORTANCE_HIGH,notifications.getNotificationChannel("hand_results_v2").getImportance());
+        assertNull(Shadows.shadowOf(notifications).getNotification(HandJobNotifications.progressId("background-api35")));
+    }
+    @Test @Config(sdk = 33) public void android13AlsoRunsInForegroundEvenWhenAlreadySubmitted() throws Exception {
+        JSONObject job=save("background-api33","reconstruction");job.put("serverJobId","already-submitted");HandJobStore.write(context,job,false);
+        reply(200,"{\"status\":\"complete\",\"result\":{\"ready\":true,\"spot\":{}}}");
+        assertEquals(ListenableWorker.Result.success(),run("background-api33"));assertEquals(1,foreground.size());
+        assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,foreground.get(0).getForegroundServiceType());
+        opens(ready("reconstruction"),"solverReview");
+    }
+    @Test @Config(sdk = 35) public void rejectedForegroundStartKeepsRequestAndNeverSchedulesPaidWork() throws Exception {
+        save("foreground-denied","solve");foregroundFailure=new IllegalStateException("Foreground start temporarily denied");
+        assertEquals(ListenableWorker.Result.retry(),run("foreground-denied"));assertTrue(routes.isEmpty());
+        JSONObject job=HandJobStore.read(context,"foreground-denied");
+        assertEquals("pending",job.getString("status"));assertEquals("foreground",job.getString("lastAttemptStage"));
+        assertFalse(job.has("serverJobId"));assertNull(ready("solve"));
+    }
+    @Test public void cancellationDuringForegroundStartupPreventsSubmission() throws Exception {
+        save("cancel-startup","solve");onForeground=()->HandJobStore.remove(context,"cancel-startup");
+        assertEquals(ListenableWorker.Result.success(),run("cancel-startup"));assertTrue(routes.isEmpty());
+        assertNull(HandJobStore.read(context,"cancel-startup"));assertNull(ready("solve"));
+    }
+    @Test @Config(sdk = 35) public void networkWaitsUntilForegroundServiceHasActuallyStarted() throws Exception {
+        save("await-foreground","solve");heldPromotion=SettableFuture.create();promotionRequested=new CountDownLatch(1);
+        reply(202,"{\"jobId\":\"remote\"}");reply(200,"{\"status\":\"complete\",\"result\":{\"solution\":{}}}");
+        Future<ListenableWorker.Result> result=executor.submit(()->run("await-foreground"));
+        assertTrue(promotionRequested.await(5,TimeUnit.SECONDS));
+        assertTrue(routes.isEmpty());assertFalse(result.isDone());
+        heldPromotion.set(null);
+        assertEquals(ListenableWorker.Result.success(),result.get(5,TimeUnit.SECONDS));
+        assertEquals(2,routes.size());opens(ready("solve"),"solverResult");
     }
 }
