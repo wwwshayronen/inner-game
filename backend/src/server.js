@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { z } from "zod";
 import { normalizePosition, reconstructSolverMath, roundBb } from "./solver-math.js";
 import { createInspectionJobs } from "./inspection-jobs.js";
+import { readEvs, foldEv, normalizeDecisionEvs, bestEvAction, foldReferenceNodes } from "./solver-ev.js";
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -209,7 +210,9 @@ function validateCards(cards){
   return (cards||[]).filter(c=>rx.test(String(c).trim()));
 }
 function normalizeCard(card=""){
-  return String(card).replace("10","T").replace("♠","s").replace("♥","h").replace("♦","d").replace("♣","c").trim();
+  const text=String(card).replace("10","T").replace("♠","s").replace("♥","h").replace("♦","d").replace("♣","c").trim();
+  const match=text.match(/^([2-9TJQKA])([shdc])$/i);
+  return match?match[1].toUpperCase()+match[2].toLowerCase():text;
 }
 function cleanTournamentText(value=""){
   return String(value||"")
@@ -231,6 +234,7 @@ function pokeraiHeaders(){
 async function pokeraiPost(path, body){
   const response = await fetch(POKERAI_BASE + path, {
     method:"POST",
+    signal:AbortSignal.timeout(25000),
     headers:pokeraiHeaders(),
     body:JSON.stringify(body)
   });
@@ -384,10 +388,16 @@ function solverActionHistoryIssues(spot){
     issues.push("Action history must start with the small blind and big blind posts");
   }
   if(rows.some(a=>a.action==="unknown"))issues.push("Action history contains an unknown action");
+  if(rows.some(a=>["bet","donk_bet","raise","allin"].includes(a.action)&&!(Number(a.amountBb)>0)))issues.push("Bet and raise amounts must be greater than zero");
   const hero=normalizePosition(spot.heroPosition), villain=normalizePosition(spot.villainPosition);
+  const oop=positionOrder(hero)<positionOrder(villain)?hero:villain;
   for(const street of ["flop","turn","river"]){
     const actions=rows.filter(a=>a.street===street);
-    if(!actions.length)continue;
+    if(!actions.length){
+      if(street===spot.decisionStreet && hero!==oop)issues.push(`${street}: missing opponent action before Hero's decision`);
+      continue;
+    }
+    if(actions[0].position!==oop)issues.push(`${street}: the out-of-position player must act first`);
     let outstanding=false,terminal=false,lastActor="",checks=0;
     for(const a of actions){
       const actor=normalizePosition(a.position);
@@ -428,6 +438,10 @@ function solverActionHistoryIssues(spot){
     if(street!==spot.decisionStreet && actions.length && !terminal){
       issues.push(`${street}: betting round is incomplete`);
     }
+    if(street===spot.decisionStreet){
+      if(terminal)issues.push(`${street}: the decision path already ends the betting round`);
+      else if(lastActor===hero)issues.push(`${street}: the next decision belongs to the opponent`);
+    }
   }
   return [...new Set(issues)];
 }
@@ -437,6 +451,9 @@ function normalizeSolverSpot(spot){
   spot.board=validateCards(spot.board).map(normalizeCard);
   spot.heroPosition=normalizePosition(spot.heroPosition);
   spot.villainPosition=normalizePosition(spot.villainPosition);
+  if(spot.heroPosition && spot.villainPosition && spot.heroPosition!==spot.villainPosition){
+    spot.heroRole=positionOrder(spot.heroPosition)<positionOrder(spot.villainPosition)?"OOP":"IP";
+  }
   spot.actionHistory=(spot.actionHistory||[]).map(a=>({...a,position:normalizePosition(a.position),action:a.action==="donk_bet"?"bet":a.action}));
   spot.actionHistoryAfterDecision=(spot.actionHistoryAfterDecision||[]).map(a=>({...a,position:normalizePosition(a.position),action:a.action==="donk_bet"?"bet":a.action}));
   ensureBlindPosts(spot);
@@ -462,6 +479,7 @@ async function extractSolverSpot(imageDataUrl,hand={},repairContext=null){
     "Do not trust seat stacks to infer starting stacks. Do not calculate effectiveStackBb, potAtDecisionBb, flopStartEffectiveStackBb, or sizePctPot: set uncertain derived values to 0. The backend reconstructs them.",
     "Set actionHistoryComplete=false whenever a visible action, actor, amount, position, card, or street order is ambiguous.",
     "Use canonical positions SB, BB, UTG, MP, CO, BTN for 6-max. Identify the dealer/button marker before assigning positions.",
+    "tableSize counts players dealt into this hand. Exclude seats marked Sitting Out or empty; do not use the table's seat capacity. In a four-player hand use CO, BTN, SB, BB for the active positions.",
     "Use compact cards like Kc Qd 4c 5c 9c 6h Qh.",
     repairContext ? `Previous extraction/validation feedback: ${JSON.stringify(repairContext)}. Re-read the IMAGE and fix the visual transcription.` : "",
     `Existing saved-hand hint (weak hint only): ${JSON.stringify(hand)}`
@@ -533,6 +551,9 @@ function solverReadiness(spot){
   if(!spot.heroPosition) missing.push("Hero position");
   if(spot.decisionStreet==="unknown") missing.push("Decision street");
   if((spot.heroCards||[]).length!==2) missing.push("Hero cards");
+  const cards=[...(spot.heroCards||[]),...(spot.board||[])].map(card=>normalizeCard(card).toLowerCase());
+  if(new Set(cards).size!==cards.length)missing.push("Duplicate cards in Hero's hand or board");
+  if(spot.heroPosition && spot.heroPosition===spot.villainPosition)missing.push("Hero and opponent must occupy different positions");
   const boardNeed=spot.decisionStreet==="flop"?3:spot.decisionStreet==="turn"?4:spot.decisionStreet==="river"?5:0;
   if(boardNeed && (spot.board||[]).length<boardNeed) missing.push("Board");
   if(!spot.actionHistoryComplete) missing.push("Complete action history from preflop to this decision");
@@ -568,9 +589,9 @@ function expectedPostflopSegments(spot){
       if(["bet","donk_bet","raise","allin"].includes(action.action))facingBet=true;
       if(["call","fold"].includes(action.action))facingBet=false;
     }
+    if(street===spot.decisionStreet)break;
     if(street==="flop" && board[3])segments.push({type:"CARD",card:board[3]});
     if(street==="turn" && board[4])segments.push({type:"CARD",card:board[4]});
-    if(street===spot.decisionStreet)break;
   }
   return segments;
 }
@@ -614,13 +635,15 @@ function observedSizingConfig(spot){
       if(["bet","donk_bet","raise","allin"].includes(action.action))facingBet=true;
       if(["call","fold"].includes(action.action))facingBet=false;
     }
-    const baseBets=[33,67,100,...bets];
+    // Put the replay's observed size first so any provider-side size budget
+    // preserves the action we need to query before adding study alternatives.
+    const baseBets=[...bets,33,67,100];
     bet_sizes[street]=[...new Set(baseBets)].filter(x=>x>=5&&x<=300).slice(0,6);
     // A lead from OOP on a later street after calling the previous street is a
     // donk in Pokerai's tree. Include the observed bet sizings here as well so
     // exact hand-history lines such as a 100% river donk exist in the tree.
     donk_sizes[street]=[...new Set(baseBets)].filter(x=>x>=5&&x<=300).slice(0,6);
-    raise_sizes[street]=[...new Set([50,100,...raises])].filter(x=>x>=10&&x<=400).slice(0,6);
+    raise_sizes[street]=[...new Set([...raises,50,100])].filter(x=>x>=10&&x<=400).slice(0,6);
   }
   return {bet_sizes,raise_sizes,donk_sizes};
 }
@@ -635,11 +658,12 @@ async function explainSolution({spot,strategy,evs,bestAction,provider,assumption
           "The numerical solver output is the source of truth. Never invent frequencies, EVs, ranges, blockers, exploitative reads, or opponent tendencies.",
           "Do not give live-play instructions. Explain why the solver mixes or prefers the actions using only the supplied facts.",
           "Keep summary to 1-2 sentences and details to at most 4 short sentences.",
+          "If evs.reference is decision, EV is measured from this decision: folding is zero and prior chips invested are sunk costs. Checking is not automatically zero. If reference is provider, its absolute zero is unverified: explain only EV differences, never claim a negative raw value means this decision loses money. Frequencies refer to this exact hand, not other hands in a range. Do not explain disagreements between frequencies and EVs with invented reasons.",
           JSON.stringify({spot,strategy,evs,bestAction,provider,assumptions})
         ].join("\n")}]
       }],
       text:{format:{type:"json_schema",name:"solver_explanation",strict:true,schema:explanationSchema}}
-    });
+    },{timeout:12000,maxRetries:0});
     return JSON.parse(response.output_text);
   }catch{
     return {
@@ -653,13 +677,13 @@ function strategyBest(strategy=[]){
   return [...strategy].sort((a,b)=>(Number(b.frequency)||0)-(Number(a.frequency)||0))[0]?.action || "";
 }
 function evBest(actions=[],values=[]){
-  let bestIndex=-1,best=-Infinity;
-  values.forEach((v,i)=>{if(Number(v)>best){best=Number(v);bestIndex=i;}});
-  return bestIndex>=0?{action:String(actions[bestIndex]||"").toLowerCase(),ev:best}:{action:"",ev:null};
+  return bestEvAction(actions,values);
 }
 function actionFreq(strategy=[],action=""){
   const normalized=String(action).toLowerCase();
-  const item=strategy.find(x=>String(x.action||"").toLowerCase()===normalized || String(x.action||"").toLowerCase().startsWith(normalized));
+  const [kind,amount]=normalized.split(/\s+/);
+  const item=strategy.find(x=>String(x.action||"").toLowerCase()===normalized ||
+    String(x.action||"").toLowerCase()===kind && Number.isFinite(Number(amount)) && Math.abs(Number(x.amount_bb)-Number(amount))<.001);
   return item?Number(item.frequency)||0:0;
 }
 
@@ -877,14 +901,31 @@ app.post("/solver/solve", async (req,res)=>{
   }
 });
 
+const nodeMatchWaits=new Map();
+const pollInFlight=new Map(),pollCompleted=new Map();
+function legalSolverActions(spot){
+  let facing=false;
+  for(const action of (spot?.actionHistory||[]).filter(a=>a.street===spot.decisionStreet)){
+    if(["bet","donk_bet","raise","allin"].includes(action.action))facing=true;
+    if(["call","fold"].includes(action.action))facing=false;
+  }
+  return facing?["fold","call","raise","allin"]:["check","bet","allin"];
+}
 app.post("/solver/poll", async (req,res)=>{
   const startedAt=Date.now();
   const requestId=solverDebugId();
   let stage="start";
+  let claimedKey=null;
   try{
     if(!POKERAI_KEY)return res.status(503).json({error:"solver_not_configured",message:"Pokerai API key is not configured yet."});
     const job=req.body?.job||{};
     if(!job.solve)return res.status(400).json({error:"missing_job",message:"Missing solver job."});
+    const key=job.solve+JSON.stringify(job.expectedSegments||[]);
+    const now=Date.now();
+    for(const [k,value] of pollCompleted)if(now-value.createdAt>300000)pollCompleted.delete(k);
+    if(pollCompleted.has(key))return res.json(pollCompleted.get(key).result);
+    if(pollInFlight.has(key))return res.status(202).json({status:"pending"});
+    pollInFlight.set(key,now);claimedKey=key;
     stage="fetch_tree";
     const treeBody={solve:job.solve};
     if(job.decisionStreet==="turn"||job.decisionStreet==="river")treeBody.turn_card=job.turnCard;
@@ -898,6 +939,19 @@ app.post("/solver/poll", async (req,res)=>{
     const target=scored[0]?.node;
     stage="match_node";
     if(!target){
+      // The provider can briefly expose a queryable tree before the requested
+      // later-street runout is ready. Retry that tree before declaring failure.
+      const key=job.solve+JSON.stringify(expected);
+      const now=Date.now();
+      for(const [k,value] of nodeMatchWaits)if(now-value>300000)nodeMatchWaits.delete(k);
+      const firstMiss=nodeMatchWaits.get(key)??now;
+      if(!nodeMatchWaits.has(key)){
+        if(nodeMatchWaits.size>=500)nodeMatchWaits.delete(nodeMatchWaits.keys().next().value);
+        nodeMatchWaits.set(key,now);
+      }
+      if(now-firstMiss<30000)return res.status(202).json({status:"pending",message:"Waiting for the requested action path and runout.",debug:{requestId,stage:"node_pending",candidateCount:candidates.length}});
+      nodeMatchWaits.delete(key);
+      try{await pokeraiPost("/v1/gto/solver/release",{solve:job.solve});}catch{}
       console.warn(JSON.stringify({
         event:"solver_node_match_failed",
         street:job.decisionStreet,
@@ -906,20 +960,43 @@ app.post("/solver/poll", async (req,res)=>{
       }));
       return res.status(422).json({
         error:"action_path_not_in_tree",
-        message:"The exact action path was not found in the solver tree. Inner Game will need to rebuild this solve.",
+        message:"The solver API did not return the observed action path. Your hand is saved; review the details or try solving again.",
         expectedPath:expected,
         availableHeroNodes:candidates.slice(0,12).map(n=>n.node),
         debug:{requestId,stage:"node_match_failed",expected,candidateCount:candidates.length,availableHeroNodes:candidates.slice(0,20).map(n=>n.node)}
       });
     }
+    nodeMatchWaits.delete(job.solve+JSON.stringify(expected));
     stage="fetch_node";
     const node=await pokeraiPost("/v1/gto/solver/node",{node:target.token,hole_cards:job.heroHand});
+    if(["available","computing"].includes(node.spot_status)||["available","computing"].includes(node.status))return res.status(202).json({status:"pending"});
     const strategy=node.strategy||[];
+    const legal=legalSolverActions(job.spot);
+    const canonicalHand=hand=>String(hand).replace(/\s/g,"").match(/.{2}/g)?.map(card=>normalizeCard(card)).sort().join("");
+    if(!strategy.length||node.is_hero===false||node.node?.startsWith("root")&&node.node!==target.node||
+      node.hole_cards&&canonicalHand(node.hole_cards)!==canonicalHand(job.heroHand)||
+      strategy.some(item=>!legal.includes(String(item.action).toLowerCase().split(" ")[0]))){
+      try{await pokeraiPost("/v1/gto/solver/release",{solve:job.solve});}catch{}
+      return res.status(422).json({error:"invalid_solver_decision",message:"The solver returned actions that do not match Hero's decision. Review the hand before solving again."});
+    }
     let evs=null;
     try{
       const evResult=await pokeraiPost("/v1/gto/evs",{solve:job.solve,node_id:target.node,hand:job.heroHand});
-      const values=Array.isArray(evResult.evs)?evResult.evs:(evResult.evs?.[job.heroHand]||null);
-      evs=values?{actions:evResult.actions||[],values}:null;
+      if(evResult.node_id&&evResult.node_id!==target.node)throw new Error("EV response belongs to a different decision node");
+      const rawEvs=readEvs(evResult,job.heroHand);
+      if(rawEvs && rawEvs.actions.every(action=>legal.includes(String(action).toLowerCase().split(" ")[0]))){
+        let baseline=rawEvs,baselineNode=target.node;
+        if(foldEv(rawEvs)===null){
+          const probe=foldReferenceNodes(tree.nodes||[],target)[0];
+          if(probe){
+            try{
+              baseline=readEvs(await pokeraiPost("/v1/gto/evs",{solve:job.solve,node_id:probe.node,hand:job.heroHand}),job.heroHand);
+              baselineNode=probe.node;
+            }catch{baseline=null;}
+          }
+        }
+        evs=normalizeDecisionEvs(rawEvs,baseline,baselineNode);
+      }
     }catch{}
     const evChoice=evs?evBest(evs.actions,evs.values):{action:"",ev:null};
     const bestAction=evChoice.action||strategyBest(strategy);
@@ -933,20 +1010,24 @@ app.post("/solver/poll", async (req,res)=>{
       bestAction,
       bestFrequency,
       bestEv:evChoice.ev,
+      evReferenceVersion:1,
       solveSeconds:tree.solve_seconds||null,
       assumptions:job.assumptions||[]
     };
     solution.explanation=await explainSolution({spot:job.spot,strategy,evs,bestAction,provider:"pokerai",assumptions:solution.assumptions});
+    const result={status:"solved",solution,debug:{requestId,stage:"complete",durationMs:Date.now()-startedAt,expected,targetNode:target.node,candidateCount:candidates.length,treeStatus:tree.spot_status}};
+    if(pollCompleted.size>=500)pollCompleted.delete(pollCompleted.keys().next().value);
+    pollCompleted.set(claimedKey,{createdAt:Date.now(),result});
     try{ await pokeraiPost("/v1/gto/solver/release",{solve:job.solve}); }catch{}
     console.log(JSON.stringify({event:"solver_completed",requestId,ms:Date.now()-startedAt,street:job.decisionStreet,node:target.node,bestAction}));
-    return res.json({status:"solved",solution,debug:{requestId,stage:"complete",durationMs:Date.now()-startedAt,expected,targetNode:target.node,candidateCount:candidates.length,treeStatus:tree.spot_status}});
+    return res.json(result);
   }catch(error){
     console.error(JSON.stringify({event:"solver_poll_failed",requestId,stage,ms:Date.now()-startedAt,code:error?.code,error:String(error?.message||error)}));
     const status=error?.status===429?202:(error?.status&&error.status<500?error.status:500);
     const debug={requestId,stage,durationMs:Date.now()-startedAt,code:error?.code||"",status:error?.status||0,payload:error?.payload||null,stack:String(error?.stack||"")};
     if(status===202)return res.status(202).json({status:"pending",message:String(error?.message||"Solver busy"),debug});
     return res.status(status).json({error:error?.code||"solver_failed",message:String(error?.message||"Solver failed"),debug});
-  }
+  }finally{if(claimedKey)pollInFlight.delete(claimedKey);}
 });
 
 
@@ -1010,5 +1091,7 @@ export {
   pokeraiPreflopActions,
   preflopRangeReadinessIssues,
   reconstructSolverMath,
-  solverSpotInputSchema
+  solverSpotInputSchema,
+  legalSolverActions,
+  actionFreq
 };

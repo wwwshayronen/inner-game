@@ -1,0 +1,147 @@
+{
+  "confidence": 0.99,
+  "game": "NLH",
+  "format": "cash",
+  "tableSize": 4,
+  "heroPosition": "BTN",
+  "villainPosition": "BB",
+  "heroRole": "IP",
+  "heroCards": [
+    "Qs",
+    "Qh"
+  ],
+  "board": [
+    "Qc",
+    "3s",
+    "4s",
+    "2s",
+    "Jd"
+  ],
+  "decisionStreet": "river",
+  "effectiveStackBb": 174.9,
+  "potAtDecisionBb": 29.4,
+  "heroStackBb": 174.9,
+  "villainStackBb": 75.4,
+  "flopStartPotBb": 4.9,
+  "flopStartEffectiveStackBb": 95,
+  "actionHistoryComplete": true,
+  "observedHeroAction": "fold",
+  "observedHeroAmountBb": 0,
+  "heroDisplayedStackBb": 174.9,
+  "villainDisplayedStackBb": 90.1,
+  "displayedStacksTiming": "after_decision_before_pot_award",
+  "finalPotBb": 14.7,
+  "streetStartPotsBb": {
+    "preflop": 1.5,
+    "flop": 4.9,
+    "turn": 8.8,
+    "river": 14.7
+  },
+  "actionHistory": [
+    {
+      "street": "preflop",
+      "position": "SB",
+      "action": "small_blind",
+      "amountBb": 0.5,
+      "sizePctPot": 0
+    },
+    {
+      "street": "preflop",
+      "position": "BB",
+      "action": "big_blind",
+      "amountBb": 1,
+      "sizePctPot": 0
+    },
+    {
+      "street": "preflop",
+      "position": "CO",
+      "action": "fold",
+      "amountBb": 0,
+      "sizePctPot": 0
+    },
+    {
+      "street": "preflop",
+      "position": "BTN",
+      "action": "raise",
+      "amountBb": 2.2,
+      "sizePctPot": 146.667
+    },
+    {
+      "street": "preflop",
+      "position": "SB",
+      "action": "fold",
+      "amountBb": 0,
+      "sizePctPot": 0
+    },
+    {
+      "street": "preflop",
+      "position": "BB",
+      "action": "call",
+      "amountBb": 1.2,
+      "sizePctPot": 0
+    },
+    {
+      "street": "flop",
+      "position": "BB",
+      "action": "check",
+      "amountBb": 0,
+      "sizePctPot": 0
+    },
+    {
+      "street": "flop",
+      "position": "BTN",
+      "action": "bet",
+      "amountBb": 2,
+      "sizePctPot": 40.816
+    },
+    {
+      "street": "flop",
+      "position": "BB",
+      "action": "call",
+      "amountBb": 2,
+      "sizePctPot": 0
+    },
+    {
+      "street": "turn",
+      "position": "BB",
+      "action": "check",
+      "amountBb": 0,
+      "sizePctPot": 0
+    },
+    {
+      "street": "turn",
+      "position": "BTN",
+      "action": "bet",
+      "amountBb": 2.9,
+      "sizePctPot": 32.955
+    },
+    {
+      "street": "turn",
+      "position": "BB",
+      "action": "call",
+      "amountBb": 2.9,
+      "sizePctPot": 0
+    },
+    {
+      "street": "river",
+      "position": "BB",
+      "action": "bet",
+      "amountBb": 14.7,
+      "sizePctPot": 100
+    }
+  ],
+  "actionHistoryAfterDecision": [],
+  "missingFields": [],
+  "extractionNotes": [
+    "Hero is the bottom-center BTN seat with Qs Qh; Alex Coman's exposed 7s 6s are opponent cards.",
+    "The river fold is Hero's observed decision and is excluded from actionHistory.",
+    "Displayed stacks appear to reflect all wagers, including the river bet, before the pot is credited to the winner.",
+    "Uncalled excess reconstructed: 14.7 BB returned to BB",
+    "Final pot verified: 14.7 BB",
+    "Effective stack entering flop reconstructed: 95 BB",
+    "Pot at Hero decision reconstructed: 29.4 BB",
+    "Flop starts at 4.9 BB",
+    "Turn starts at 8.8 BB",
+    "River starts at 14.7 BB"
+  ]
+}

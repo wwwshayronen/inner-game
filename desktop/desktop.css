@@ -1,5 +1,5 @@
 @media (min-width: 800px) {
-  html, body { min-width: 900px; background:#050607; }
+  html, body { min-width: 0; background:#050607; }
   body { overflow-y:auto; }
   .app-shell {
     max-width:none !important;

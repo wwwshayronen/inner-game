@@ -74,3 +74,15 @@ test("reconstructing a saved spot again preserves amounts and stacks", () => {
   assert.equal(again.villainStartBb, first.villainStartBb);
   assert.deepEqual(again.issues, []);
 });
+test("raise sizing uses the raise increment and pot after calling",()=>{
+  const spot={heroPosition:"CO",villainPosition:"UTG",decisionStreet:"flop",observedHeroAction:"unknown",streetStartPotsBb:{flop:10},actionHistory:[
+    {street:"preflop",position:"SB",action:"small_blind",amountBb:.5},
+    {street:"preflop",position:"BB",action:"big_blind",amountBb:1},
+    {street:"preflop",position:"UTG",action:"raise",amountBb:4.25},
+    {street:"preflop",position:"CO",action:"call",amountBb:4.25},
+    {street:"flop",position:"UTG",action:"bet",amountBb:5},
+    {street:"flop",position:"CO",action:"raise",amountBb:15}
+  ]};
+  reconstructSolverMath(spot);
+  assert.equal(spot.actionHistory.at(-1).sizePctPot,50);
+});
