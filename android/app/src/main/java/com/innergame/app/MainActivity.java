@@ -13,6 +13,7 @@ import android.content.ContentUris;
 import android.database.ContentObserver;
 import android.database.Cursor;
 import android.content.Intent;
+import android.content.ActivityNotFoundException;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.content.pm.PackageManager;
@@ -26,6 +27,8 @@ import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.Base64;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Toast;
@@ -59,6 +62,7 @@ import org.json.JSONObject;
 public final class MainActivity extends Activity {
     private static final int NOTIFICATION_PERMISSION_REQUEST = 42;
     private static final int MEDIA_PERMISSION_REQUEST = 43;
+    private static final int HAND_FILE_REQUEST = 44;
     private static final int MAX_BREAK_REMINDERS = 24;
     private static final String HAND_CHANNEL_ID = "hand_capture_fast_v2";
     private static final String HAND_ANALYSIS_URL = "https://inner-game-production.up.railway.app/analyze-hand";
@@ -77,6 +81,7 @@ public final class MainActivity extends Activity {
         }
     }
     private WebView webView;
+    private ValueCallback<Uri[]> handFileCallback;
     private String pendingScreenshotDataUrl;
     private String pendingHandId;
     private String pendingHandView = "handDetail";
@@ -112,13 +117,37 @@ public final class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        settings.setAllowContentAccess(false);
+        // The system image picker grants access only to the screenshot selected by the player.
+        settings.setAllowContentAccess(true);
         settings.setAllowFileAccess(true);
         settings.setAllowFileAccessFromFileURLs(false);
         settings.setAllowUniversalAccessFromFileURLs(false);
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
+
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
+                    FileChooserParams params) {
+                if (handFileCallback != null) handFileCallback.onReceiveValue(null);
+                handFileCallback = callback;
+                Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                picker.addCategory(Intent.CATEGORY_OPENABLE);
+                picker.setType("image/*");
+                picker.putExtra(Intent.EXTRA_MIME_TYPES,
+                        new String[]{"image/png", "image/jpeg", "image/webp"});
+                picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                try {
+                    startActivityForResult(picker, HAND_FILE_REQUEST);
+                } catch (ActivityNotFoundException error) {
+                    handFileCallback.onReceiveValue(null);
+                    handFileCallback = null;
+                    Toast.makeText(MainActivity.this, "No image picker is available.", Toast.LENGTH_SHORT).show();
+                }
+                return true;
+            }
+        });
 
         createNotificationChannel();
         createHandNotificationChannel();
@@ -155,6 +184,14 @@ public final class MainActivity extends Activity {
         });
         handleIncomingIntent(getIntent());
         webView.loadUrl("https://appassets.androidplatform.net/assets/www/index.html");
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != HAND_FILE_REQUEST || handFileCallback == null) return;
+        handFileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+        handFileCallback = null;
     }
 
     private void handleIncomingIntent(Intent intent) {
@@ -1244,6 +1281,10 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (handFileCallback != null) {
+            handFileCallback.onReceiveValue(null);
+            handFileCallback = null;
+        }
         screenshotSession = null;
         if (handJobObserver != null) handJobObserver.stopWatching();
         unregisterScreenshotObserver();

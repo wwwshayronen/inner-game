@@ -2,6 +2,7 @@ const STORAGE_KEY = 'innerGame.v5';
 const LEGACY_STORAGE_KEYS = ['innerGame.v4','innerGame.v3','innerGame.v2','innerGame.v1'];
 const GOALS = ['Stay patient','No results checking','Mark tough spots','Take 3 breaths after big pots','Stick to bankroll','Quit if tilted'];
 const defaults = {
+  profile: {name:'Shay'},
   sessions: [],
   generalHands: [],
   dismissedHandJobIds: [],
@@ -41,6 +42,7 @@ let solverReviewHandId = null;
 const solverInspectingHandIds = new Set();
 let solverPolling = new Set();
 let handsFilter = 'all';
+let handsSearch = '';
 let handReturnRoute = 'handsLibrary';
 const HAND_ANALYSIS_API_URL = localStorage.getItem('innerGame.handApiUrl') || 'https://inner-game-production.up.railway.app';
 const BREATH_WORKOUTS = {
@@ -144,24 +146,48 @@ function gamificationStats(){
 function avg(a){ return a.length ? a.reduce((x,y)=>x+y,0)/a.length : 0; }
 function corr(xs,ys){ if(xs.length<3||xs.length!==ys.length)return null; const mx=avg(xs),my=avg(ys); let n=0,dx=0,dy=0; xs.forEach((x,i)=>{const a=x-mx,b=ys[i]-my;n+=a*b;dx+=a*a;dy+=b*b}); return dx&&dy?n/Math.sqrt(dx*dy):null; }
 function navigate(to){ route=to; stopBreath(); stopSessionTicker(); render(); window.scrollTo({top:0,behavior:'instant'}); }
-function tabs(active){
-  const items=[
-    ['home','⌂','Home'],
-    ['sessions','◷','Sessions'],
-    ['insights','▥','Stats'],
-    ['profile','≡','More']
-  ];
-  const left=items.slice(0,2).map(([r,i,l])=>'<button class="tab '+(active===r?'active':'')+'" data-nav="'+r+'"><span class="ti">'+i+'</span><span>'+l+'</span></button>').join('');
-  const right=items.slice(2).map(([r,i,l])=>'<button class="tab '+(active===r?'active':'')+'" data-nav="'+r+'"><span class="ti">'+i+'</span><span>'+l+'</span></button>').join('');
-  const center=state.activeSession
-    ? '<button class="tab-create stop" data-finish-session aria-label="End session"><span class="stop-square"></span></button>'
-    : '<button class="tab-create play" data-start-prep aria-label="Start session"><span class="play-triangle"></span></button>';
-  const running=state.activeSession?'<div class="nav-running"><span></span>Session running · <b id="navElapsed">'+formatDuration(Date.now()-state.activeSession.startedAt)+'</b></div>':'';
-  return running+'<nav class="tabs apple-tabs">'+left+center+right+'</nav>';
+function uiIcon(name){
+  const paths={
+    home:'<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/>',
+    sessions:'<rect x="4" y="5" width="16" height="16" rx="3"/><path d="M8 3v4m8-4v4M4 10h16m-11 4h6m-6 3h3"/>',
+    insights:'<path d="M4 4v16h16m-12-4v-4m5 4V8m5 8V5"/>',
+    settings:'<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
+    play:'<path d="m9 5 11 7-11 7z"/>',stop:'<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    arrow:'<path d="M4 12h15m-6-6 6 6-6 6"/>',back:'<path d="m14 5-7 7 7 7"/>',
+    breathe:'<path d="M3 8h12a3 3 0 1 0-3-3M3 12h16a3 3 0 1 1-3 3M3 16h6"/>',
+    target:'<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8" fill="currentColor"/>',
+    cards:'<rect x="8" y="4" width="12" height="16" rx="2"/><path d="m5 5-2 13a2 2 0 0 0 2 2m9-11 3 3-3 3-3-3z"/>',
+    plan:'<rect x="5" y="5" width="14" height="16" rx="2"/><path d="M9 5V3h6v2m-6 7 2 2 4-4m-6 7h6"/>',
+    bolt:'<path d="m13 2-8 12h7l-1 8 8-12h-7z"/>',
+    award:'<circle cx="12" cy="9" r="6"/><path d="m8 14-2 8 6-3 6 3-2-8"/>',
+    shield:'<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/><path d="m8 11 3 3 5-5"/>',
+    search:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
+    upload:'<path d="M12 16V3m-5 5 5-5 5 5M4 15v5h16v-5"/>',
+    download:'<path d="M12 3v13m-5-5 5 5 5-5M4 16v5h16v-5"/>',
+    edit:'<path d="m16 3 5 5-12 12H4v-5zm-3 3 5 5"/>',
+    trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
+    check:'<path d="m5 12 4 4L19 6"/>',
+    spark:'<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/>',
+    light:'<path d="M9 18h6m-5 3h4m-6-6a7 7 0 1 1 8 0v1H8z"/>'
+  };
+  return `<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]||paths.target}</svg>`;
 }
-function header(title,sub,back=true){ return `<div class="hero"><div class="topbar">${back?'<button class="back" data-back aria-label="Back">‹</button>':''}<div class="hero-copy"><h1>${title}</h1><p class="subtitle">${sub}</p></div></div></div>`; }
-function stepper(active){ const labels=['Breathe','Goals','3 Hands','Plan']; return `<div class="stepper four">${labels.map((l,i)=>`<div class="step ${i<active?'done':''} ${i===active?'active':''}"><div class="bubble">${i+1}</div><span>${l}</span></div>`).join('')}</div>`; }
-function appShell(content,tab='home'){ return `<main class="app-shell page-flow">${content}${tabs(tab)}</main>`; }
+function symbolIcon(symbol){return uiIcon(({'◌':'breathe','◎':'target','♠':'cards','◉':'shield','▣':'plan','✦':'spark','◈':'award','⚡':'bolt','↗':'insights'})[symbol]||'target');}
+function brandLockup(){return `<span class="brand-lockup"><img class="brand-mark" src="brand-icon.png" alt=""><span>inner<span class="brand-word-light">game</span><small>YOUR GAME. YOUR PROCESS.</small></span></span>`;}
+function brandBar(){return `<div class="brand-bar"><button class="brand-home" data-nav="home" aria-label="Inner Game home">${brandLockup()}</button><button class="profile-avatar" data-nav="profile" aria-label="Settings">${esc((state.profile?.name||'IG').trim().slice(0,2).toUpperCase())}</button></div>`;}
+function tabs(active){
+  const items=[['home','home','Home'],['sessions','sessions','Sessions'],['insights','insights','Insights'],['profile','settings','More']];
+  const tab=([r,i,l])=>`<button class="tab ${active===r?'active':''}" data-nav="${r}" ${active===r?'aria-current="page"':''}><span class="ti">${uiIcon(i)}</span><span>${l}</span></button>`;
+  const left=items.slice(0,2).map(tab).join(''),right=items.slice(2).map(tab).join('');
+  const center=state.activeSession
+    ? `<button class="tab-create stop" data-finish-session aria-label="End session">${uiIcon('stop')}<span>Finish</span></button>`
+    : `<button class="tab-create play" data-start-prep aria-label="Start session">${uiIcon('play')}<span>Play</span></button>`;
+  const running=state.activeSession?'<div class="nav-running"><span></span>Session running · <b id="navElapsed">'+formatDuration(Date.now()-state.activeSession.startedAt)+'</b></div>':'';
+  return `${running}<nav class="tabs apple-tabs" aria-label="Main navigation"><button class="nav-brand brand-home" data-nav="home" aria-label="Inner Game home">${brandLockup()}</button><div class="nav-items">${left}${center}${right}</div><div class="nav-footnote">Clear mind.<br>Sharper decisions.</div></nav>`;
+}
+function header(title,sub,back=true){ return `<div class="hero"><div class="topbar">${back?`<button class="back" data-back aria-label="Back">${uiIcon('back')}</button>`:''}<div class="hero-copy"><h1>${title}</h1>${sub?`<p class="subtitle">${sub}</p>`:''}</div></div></div>`; }
+function stepper(active){ const labels=['Breathe','Goals','3 Hands','Plan']; return `<div class="stepper four" aria-label="Preparation progress">${labels.map((l,i)=>`<div class="step ${i<active?'done':''} ${i===active?'active':''}" ${i===active?'aria-current="step"':''}><div class="bubble">${i<active?uiIcon('check'):i+1}</div><span>${l}</span></div>`).join('')}</div>`; }
+function appShell(content,tab='home'){ return `<main class="app-shell page-flow" data-screen="${esc(route)}">${brandBar()}${content}${tabs(tab)}</main>`; }
 function formatDuration(ms){ const total=Math.max(0,Math.floor((Number(ms)||0)/1000)); const h=Math.floor(total/3600), m=Math.floor((total%3600)/60), s=total%60; return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
 function nativeCall(name,payload={}){
   try{
@@ -1121,7 +1147,7 @@ function solverResult(){
     </section>
     <section class="card pad solver-strategy-card"><div class="section-title">GTO strategy</div>${solverStrategyBars(s.strategy||[])}</section>
     ${ev?`<section class="card pad solver-ev-card"><div class="section-title">${ev.decision?'Action EVs':'EV loss vs best action'}</div><p class="field-hint">${ev.decision?'Measured from this decision. Folding is 0 BB; earlier wagers are sunk costs.':'The solver’s absolute EV reference is unavailable. These differences show the cost of each action; 0 means best.'}</p>${ev.actions.map((action,i)=>`<div class="row between solver-ev-row"><span>${esc(solverActionLabel(action))}</span><strong>${ev.values[i]===null?'Unavailable':(ev.decision?ev.values[i]:ev.losses[i]).toFixed(3)+' BB'}</strong></div>`).join('')}</section>`:''}
-    <section class="card pad solver-why-card"><div class="section-title">💡 Why</div><strong>${esc(explanation?.summary||'Compare the strategy mix and EV differences above.')}</strong>${explanation?.details?`<p>${esc(explanation.details)}</p>`:''}${(explanation?.facts||[]).length?`<div class="solver-facts">${explanation.facts.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}</section>
+    <section class="card pad solver-why-card"><div class="section-title title-with-icon">${uiIcon('light')} Why this action</div><strong>${esc(explanation?.summary||'Compare the strategy mix and EV differences above.')}</strong>${explanation?.details?`<p>${esc(explanation.details)}</p>`:''}${(explanation?.facts||[]).length?`<div class="solver-facts">${explanation.facts.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}</section>
     <section class="card pad solver-assumptions"><div class="section-title">Assumptions</div>${(s.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>
     <div class="solver-study-note"><strong>Post-hand study only</strong><span>Solver results are for review and training, not live assistance.</span></div>
     <button class="btn secondary" data-solve-hand="${esc(h.id)}">Review & solve again</button>
@@ -1258,16 +1284,27 @@ function handLibraryGroup(h){
 }
 function handsLibrary(){
   const all=allHandsLibrary().filter(h=>!h.autoCandidate);
-  const rows=all.filter(h=>handsFilter==='all'||(handsFilter==='session'&&h._scope==='session')||(handsFilter==='general'&&h._scope==='general'));
+  const query=handsSearch.trim().toLocaleLowerCase();
+  const rows=all.filter(h=>handsFilter==='all'||(handsFilter==='session'&&h._scope==='session')||(handsFilter==='general'&&h._scope==='general')).filter(h=>!query||[handDisplayTitle(h),h.description,h.notes,h.site,h.stakes,h.tournamentName,...(h.heroCards||[]),...(h.board||[])].filter(Boolean).join(' ').toLocaleLowerCase().includes(query));
   const groups=[];
   rows.forEach(h=>{const label=handLibraryGroup(h);let g=groups.find(x=>x.label===label);if(!g){g={label,rows:[]};groups.push(g);}g.rows.push(h);});
-  return appShell(`${header('Saved <span class="accent">Hands</span>','Your poker screenshots, clean and searchable.',false)}
+  return appShell(`${header('Hand library','Save the spot. Study the decision.',false)}
     ${handsSwitcher('hands')}
     <section class="hands-a-toolbar">
+      <label class="library-search">${uiIcon('search')}<input id="handsSearch" type="search" placeholder="Search hands, cards, or notes" aria-label="Search saved hands" value="${esc(handsSearch)}"></label>
       <div class="hand-filter-pills a-segmented">${[['all','All Hands'],['session','Session'],['general','Unassigned']].map(([v,l])=>`<button class="${handsFilter===v?'active':''}" data-hands-filter="${v}">${l}</button>`).join('')}</div>
     </section>
-    <section class="hand-drop-zone compact" id="handDropZone"><strong>Add a hand</strong><span>Drop a screenshot here · or Share → Inner Game</span></section>
-    <div class="hands-a-groups">${groups.length?groups.map(g=>`<section class="hands-a-group"><div class="hands-a-group-title"><strong>${esc(g.label)}</strong><span>${g.rows.length} hand${g.rows.length===1?'':'s'}</span></div><div class="captured-hands-list">${g.rows.map(h=>handCard(h,true,true)).join('')}</div></section>`).join(''):'<div class="notice">No hands match this filter.</div>'}</div>`,'sessions');
+    <section class="hand-drop-zone compact" id="handDropZone">${uiIcon('upload')}<div class="upload-copy"><strong>Bring a hand to the table</strong><span>Choose a screenshot, drop it here, or share it to Inner Game.</span></div><button class="btn secondary tiny" data-upload-hand>Add screenshot</button><input type="file" id="handUpload" accept="image/png,image/jpeg,image/webp" class="sr-only" aria-label="Choose hand screenshot"></section>
+    <div class="hands-a-groups">${groups.length?groups.map(g=>`<section class="hands-a-group"><div class="hands-a-group-title"><strong>${esc(g.label)}</strong><span>${g.rows.length} hand${g.rows.length===1?'':'s'}</span></div><div class="captured-hands-list">${g.rows.map(h=>handCard(h,true,true)).join('')}</div></section>`).join(''):`<div class="empty-state card">${uiIcon('cards')}<strong>${all.length?'No matching hands':'Your study starts here'}</strong><p>${all.length?'Try another search or filter.':'Add a screenshot to reconstruct the hand and explore the solver’s strategy.'}</p></div>`}</div>`,'sessions');
+}
+function importHandScreenshot(file){
+  if(!file)return;
+  if(!['image/png','image/jpeg','image/webp'].includes(file.type)){captureToast('Choose a PNG, JPEG, or WebP screenshot.','error');return;}
+  if(file.size>10*1024*1024){captureToast('Choose a screenshot smaller than 10 MB.','error');return;}
+  const reader=new FileReader();
+  reader.onerror=()=>captureToast('Could not read this screenshot. Try choosing it again.','error');
+  reader.onload=()=>window.innerGameReceiveScreenshot(reader.result,'manual_upload');
+  reader.readAsDataURL(file);
 }
 function sessionHands(){
   const target=selectedSessionHandsId==='active'?state.activeSession:state.sessions.find(s=>s.id===selectedSessionHandsId);
@@ -1353,24 +1390,20 @@ function homeMoneyCard(){
 }
 
 function home(){
-  const g=gamificationStats();
+  const g=gamificationStats(),recent=[...state.sessions].reverse().slice(0,3);
   const greeting=(new Date().getHours()<12?'Good morning':new Date().getHours()<18?'Good afternoon':'Good evening');
   const actionPrimary=state.activeSession
-    ? '<button class="home-action primary" data-nav="active"><span class="action-symbol play-mini"></span><div><strong>Resume Session</strong><small>Return to live session</small></div></button>'
-    : '<button class="home-action primary" data-start-prep><span class="action-symbol play-mini"></span><div><strong>Start Session</strong><small>Prepare, then play</small></div></button>';
+    ? `<button class="home-action primary" data-nav="active">${uiIcon('play')}<span><strong>Resume Session</strong><small>Your session is running</small></span>${uiIcon('arrow')}</button>`
+    : `<button class="home-action primary" data-start-prep>${uiIcon('play')}<span><strong>Start Session</strong><small>Prepare. Focus. Play.</small></span>${uiIcon('arrow')}</button>`;
   const dots=[0,1,2,3,4,5,6].map((_,i)=>'<span class="'+(i<Math.min(g.aStreak,7)?'done':'')+'"></span>').join('');
-  return appShell(
-    '<div class="home-top"><button class="home-settings" data-nav="profile" aria-label="Settings">⚙</button><small>'+greeting+',</small><h1>Shay</h1><p>Play focused. Progress compounds.</p></div>'+
-    '<div class="stack apple-stack">'+
-      '<div class="home-actions">'+
-        actionPrimary+
-        '<button class="home-action secondary" data-nav="log"><span class="action-symbol">✎</span><div><strong>Log Session</strong><small>Add finished session</small></div></button>'+
-      '</div>'+
-      homeMoneyCard()+
-      '<section class="apple-panel streak-panel compact"><div class="streak-main"><span class="streak-icon">🔥</span><div><strong>'+g.aStreak+'-session A-game streak</strong><div class="streak-dots">'+dots+'</div></div><span class="chev">›</span></div></section>'+
-    '</div>',
-    'home'
-  );
+  return appShell(`<div class="home-top"><small>${greeting}${state.profile?.name?', '+esc(state.profile.name):''}</small><h1>Your game, <span class="accent">in focus.</span></h1><p>A little intention. A better session.</p></div>
+    <section class="home-focus-card card"><div class="focus-orbit" aria-hidden="true"><i></i><i></i><i></i><b></b></div><div class="focus-card-copy"><span class="eyebrow">${state.activeSession?'SESSION LIVE':'BUILD YOUR A-GAME'}</span><h2>${state.activeSession?'Stay in your rhythm.':'Clear mind.<br>Sharper decisions.'}</h2><p>${state.activeSession?'Your goals and saved hands are one tap away.':'Make your next session a deliberate one.'}</p></div><div class="home-actions">${actionPrimary}<button class="home-action secondary" data-nav="log">${uiIcon('edit')}<span><strong>Log Session</strong><small>Reflect on your play</small></span></button></div></section>
+    <div class="dashboard-two">${homeMoneyCard()}<div class="dashboard-aside">
+      <section class="card pad daily-tool-card"><div class="section-heading"><span class="eyebrow">BETWEEN SESSIONS</span><span class="mini-badge">Your toolkit</span></div><button class="tool-link" data-nav="handsLibrary"><span class="tool-icon">${uiIcon('cards')}</span><span><strong>Study your hands</strong><small>${allHandsLibrary().filter(h=>!h.autoCandidate).length} saved · review, reconstruct & solve</small></span>${uiIcon('arrow')}</button><button class="tool-link" data-nav="breathe"><span class="tool-icon lavender">${uiIcon('breathe')}</span><span><strong>Find your focus</strong><small>A guided reset before you play</small></span>${uiIcon('arrow')}</button></section>
+      <button class="apple-panel streak-panel compact" data-nav="profile"><div class="streak-main"><span class="streak-icon">${uiIcon('award')}</span><div><strong>${g.aStreak}-session A-game streak</strong><small>Good process is worth repeating.</small><div class="streak-dots">${dots}</div></div>${uiIcon('arrow')}</div></button>
+      <section class="card pad progress-snapshot"><div class="row between"><div><span class="eyebrow">YOUR PROGRESS</span><strong>Level ${g.level}</strong></div><span class="xp-badge">${g.xp} XP</span></div><div class="xp-track"><i style="width:${g.progress*100}%"></i></div><p>Every reviewed session moves you forward.</p></section>
+    </div></div>
+    <div class="section-heading"><h2 class="section-title">Recent sessions</h2><button class="text-link" data-nav="sessions">View all ${uiIcon('arrow')}</button></div><section class="session-list session-list-cards">${recent.length?recent.map(sessionRow).join(''):`<div class="card empty-state">${uiIcon('sessions')}<h3>Your story starts with one session.</h3><p>Log your play and see your process improve over time.</p><button class="btn secondary" data-nav="log">Log your first session</button></div>`}</section>`,'home');
 }
 function bestStateLabel(){ if(!state.sessions.length)return '—'; const buckets={Calm:[],Focused:[],Tense:[],Tilted:[]}; state.sessions.forEach(s=>{(buckets[s.state]??=[]).push(s.process||0)}); return Object.entries(buckets).sort((a,b)=>avg(b[1])-avg(a[1]))[0]?.[0]||'—'; }
 
@@ -1387,7 +1420,7 @@ function prepOverview(){ return appShell(`${header('Session <span class="accent"
     <div class="notice"><strong>Keep it simple.</strong><br>You’re preparing your process, not predicting results.</div>
     <button class="btn primary" data-nav="breathe">Begin Prep <span>→</span></button>
   </div>`,'home'); }
-function prepRow(icon,title,sub,to,badge=''){ return `<button class="prep-item ${badge?'featured':''}" data-nav="${to}"><span class="icon">${icon}</span><span class="prep-copy"><strong>${title}${badge?` <span class="mini-badge">${badge}</span>`:''}</strong><small>${sub}</small></span><span class="chev">›</span></button>`; }
+function prepRow(icon,title,sub,to,badge=''){ return `<button class="prep-item ${badge?'featured':''}" data-nav="${to}"><span class="icon">${symbolIcon(icon)}</span><span class="prep-copy"><strong>${title}${badge?` <span class="mini-badge">${badge}</span>`:''}</strong><small>${sub}</small></span><span class="chev">${uiIcon('arrow')}</span></button>`; }
 function levelMinutes(l){ return ({beginner:3,intermediate:10,advanced:20})[l]||3; }
 function fmtTime(sec){ const total=Math.max(0,Math.ceil(Number(sec)||0)),m=Math.floor(total/60),s=total%60; return `${m}:${String(s).padStart(2,'0')}`; }
 function currentBreathWorkout(){ return BREATH_WORKOUTS[breathWorkout] || BREATH_WORKOUTS.focus; }
@@ -1532,7 +1565,7 @@ function currentHand(){ const hw=ensureHandWarmup(), hs=selectedHands(); return 
 function suitSymbol(s){ return ({s:'♠',h:'♥',d:'♦',c:'♣'})[s]||s; }
 function cardHTML(card,small=false){ if(!card)return ''; const rank=card[0], suit=card[1], red=suit==='h'||suit==='d'; return `<span class="playing-card ${small?'small':''} ${red?'red':''}"><b>${rank}</b><span>${suitSymbol(suit)}</span></span>`; }
 function boardHTML(cards=[]){ return cards.length?`<div class="board-cards">${cards.map(c=>cardHTML(c,true)).join('')}</div>`:`<div class="preflop-label">Preflop — no board yet</div>`; }
-function actionIcon(label){ if(/^Call$/i.test(label))return '<span class="poker-chip" aria-hidden="true"><i></i></span>'; if(/Fold/i.test(label))return '<span class="action-x">×</span>'; if(/Check/i.test(label))return '<span class="action-check">✓</span>'; return '<span class="action-up">↑</span>'; }
+function actionIcon(label){ if(/^Call$/i.test(label))return '<span class="poker-chip" aria-hidden="true"><i></i></span>'; if(/Fold/i.test(label))return '<span class="action-x">×</span>'; if(/^Check$/i.test(label))return '<span class="action-check">✓</span>'; return '<span class="action-up">↑</span>'; }
 const TABLE_POSITIONS=['UTG','HJ','CO','BTN','SB','BB'];
 function tableSeats(h){
   return TABLE_POSITIONS.map((pos,i)=>{
@@ -1561,7 +1594,7 @@ function handPlay(){ const hw=ensureHandWarmup(), h=currentHand(); if(!h)return 
     <div class="action-history"><strong>Action History</strong><span>${esc(h.history)}</span></div>
   </section>
   <div class="section-title list-heading">What would you do?</div><div class="action-options">${h.options.map((o,idx)=>`<button class="poker-action ${a.action===o?'selected':''}" data-hand-action="${esc(o)}">${actionIcon(o)}<strong>${esc(o)}</strong></button>`).join('')}</div>
-  <section class="card pad"><div class="row between"><div><strong>Confidence</strong><div class="session-meta">How sure are you?</div></div><div class="confidence-row">${[1,2,3,4,5].map(n=>`<button class="confidence ${Number(a.confidence||4)===n?'selected':''}" data-confidence="${n}">${n}</button>`).join('')}</div></div></section>
+  <section class="card pad"><div class="row between"><div><strong>Confidence</strong><div class="session-meta">How sure are you?</div></div><div class="confidence-row" role="group" aria-label="Decision confidence">${[1,2,3,4,5].map(n=>`<button class="confidence ${Number(a.confidence||4)===n?'selected':''}" data-confidence="${n}" aria-label="Confidence ${n} of 5" aria-pressed="${Number(a.confidence||4)===n}">${n}</button>`).join('')}</div></div></section>
   <div id="handError" class="form-error" aria-live="polite"></div><button class="btn primary" data-hand-continue>Continue <span>→</span></button>`,'home'); }
 function handExplain(){ const hw=ensureHandWarmup(), h=currentHand(); if(!h)return handsIntro(); const i=hw.currentIndex||0, a=hw.answers?.[h.id]||{}; if(!a.action){ route='handPlay'; return handPlay(); } return appShell(`${header('Explain Your <span class="accent">Thinking</span>',`Hand ${i+1} of 3`)}
   <section class="card pad choice-summary"><div class="session-meta">Your choice</div><div class="choice-action">${esc(a.action)}</div><div class="session-meta">${h.heroPos} with ${h.heroHand.map(c=>`${c[0]}${suitSymbol(c[1])}`).join(' ')} · ${h.street}</div></section>
@@ -1575,7 +1608,7 @@ function handsComplete(){ const hw=ensureHandWarmup(), hs=selectedHands(); retur
 
 function review(){ ensurePrepSchedule(); const p=state.prep; const hw=p.handWarmup||{}; const warmupText=hw.completed?'3 hands completed':hw.skipped?'Skipped for this session':'Not completed yet'; return appShell(`${header('Session <span class="accent">Setup</span>','Everything you need before you sit down.')}
   ${stepper(3)}
-  <section class="card pad"><button class="prep-item nested" data-nav="handsIntro"><span class="icon">${hw.completed?'✓':'♠'}</span><span class="prep-copy"><strong>3-Hand Warm-up</strong><small>${warmupText}</small></span><span class="chev">›</span></button></section>
+  <section class="card pad"><button class="prep-item nested" data-nav="handsIntro"><span class="icon">${uiIcon(hw.completed?'check':'cards')}</span><span class="prep-copy"><strong>3-Hand Warm-up</strong><small>${warmupText}</small></span><span class="chev">›</span></button></section>
   <section class="card pad stack"><div class="field"><label>One leak to watch today</label><input type="text" data-prep-text="leak" value="${esc(p.leak)}" placeholder="e.g. Calling too wide vs. 3-bets"></div><div class="field"><label>One reminder for this session</label><input type="text" data-prep-text="reminder" value="${esc(p.reminder)}" placeholder="e.g. Slow down after big pots"></div></section>
   <section class="card pad"><div class="section-title">Game & place</div><div class="stack">
     ${gameField('Game / Stakes','stakes',p.stakes)}
@@ -1678,7 +1711,7 @@ function sessionDeleteModal(){
 }
 function gamificationPanel(){
   const g=gamificationStats(), unlocked=g.achievements.filter(a=>a.on).length;
-  return `<section class="card pad progress-card"><div class="row between"><div><small class="eyebrow">PROGRESS</small><div class="section-title compact-title">Level ${g.level}</div></div><div class="xp-badge">${g.xp} XP</div></div><div class="xp-track big"><i style="width:${Math.max(4,g.progress*100)}%"></i></div><div class="row between session-meta"><span>${g.aStreak} session A-game streak</span><span>${unlocked}/${g.achievements.length} badges</span></div><div class="achievement-grid">${g.achievements.map(a=>`<div class="achievement ${a.on?'unlocked':'locked'}"><span>${a.icon}</span><strong>${a.name}</strong><small>${a.desc}</small></div>`).join('')}</div></section>`;
+  return `<section class="card pad progress-card"><div class="row between"><div><small class="eyebrow">PROGRESS</small><div class="section-title compact-title">Level ${g.level}</div></div><div class="xp-badge">${g.xp} XP</div></div><div class="xp-track big"><i style="width:${g.progress*100}%"></i></div><div class="row between session-meta"><span>${g.aStreak} session A-game streak</span><span>${unlocked}/${g.achievements.length} badges</span></div><div class="achievement-grid">${g.achievements.map(a=>`<div class="achievement ${a.on?'unlocked':'locked'}"><span>${symbolIcon(a.icon)}</span><strong>${a.name}</strong><small>${a.desc}</small></div>`).join('')}</div></section>`;
 }
 function sessions(){
   const list=[...state.sessions].reverse();
@@ -1791,7 +1824,7 @@ function insights(){
 }
 function recommendation(ss){ if(ss.length<3)return 'Keep the routine consistent for a few sessions. The app will surface patterns once there is enough data.'; const c=corr(ss.map(x=>x.judgment),ss.map(x=>x.process)); if(c!==null&&c<-.25)return 'Try replacing self-criticism with one neutral observation after a difficult hand.'; const t=corr(ss.map(x=>x.tilt),ss.map(x=>x.process)); if(t!==null&&t<-.25)return 'Protect your process when tilt rises: use the hourly reset or end the session if you stop following your plan.'; return 'Keep one clear process goal per session and compare it with your post-session process score.'; }
 
-function profile(){ return appShell(`${header('More','Your game, your data, your progress.',false)}<div class="stack">${gamificationPanel()}<section class="card pad"><div class="section-title">Local-first data</div><p class="body-copy">No account and no server are required. Sessions, preparation settings, and insights are stored locally on this phone.</p></section><button class="btn secondary" id="exportData">Export my data</button><button class="btn secondary" id="seedDemo">Add demo sessions</button><button class="btn secondary danger-text" id="clearData">Clear all local data</button></div>`,'profile'); }
+function profile(){ return appShell(`${header('Your game','Make the process yours.',false)}<div class="stack"><section class="card pad profile-identity"><img src="brand-icon.png" alt="Inner Game" class="profile-brand-icon"><div><small class="eyebrow">PLAYER PROFILE</small><h2>${esc(state.profile.name)}</h2><p>Show up clear. Play with purpose.</p></div></section><form id="profileForm" class="card pad"><div class="section-title">Personalize your space</div><div class="profile-name-form"><div class="field"><label for="profileName">Your name</label><input id="profileName" name="name" type="text" autocomplete="given-name" maxlength="32" required value="${esc(state.profile.name)}"></div><button class="btn secondary" type="submit">Save name</button></div></form>${gamificationPanel()}<section class="card pad"><div class="section-title title-with-icon">${uiIcon('shield')}Your data</div><p class="body-copy">Your sessions, preparation, saved hands, and insights live on this device. Screenshot reconstruction and solver analysis use an online service. Export your data to keep a backup.</p><div class="settings-actions"><button class="btn secondary" id="exportData">${uiIcon('download')}Export my data</button><button class="btn secondary" id="seedDemo">${uiIcon('spark')}Explore demo sessions</button><button class="btn secondary danger-text" id="clearData">${uiIcon('trash')}Clear local data</button></div></section><p class="brand-footer">innergame · YOUR GAME. YOUR PROCESS.</p></div>`,'profile'); }
 
 function render(){
   const app=document.getElementById('app');
@@ -1807,6 +1840,7 @@ function render(){
   bind();hydrateHandImages();if(route==='active')startSessionTicker();
 }
 function bind(){
+  const profileForm=document.getElementById('profileForm');if(profileForm)profileForm.onsubmit=e=>{e.preventDefault();const name=document.getElementById('profileName').value.trim().slice(0,32);if(!name)return;state.profile.name=name;save();render();captureToast('Your name is saved.');};
   document.querySelectorAll('[data-nav]').forEach(el=>el.onclick=()=>navigate(el.dataset.nav));
   document.querySelectorAll('[data-back]').forEach(el=>el.onclick=()=>navigate(route==='solverReview'||route==='solverResult'?'handDetail':route==='handDetail'?handReturnRoute:route==='handsLibrary'?'sessions':route==='sessionDetail'?'sessions':route==='sessionHands'?(selectedSessionHandsId==='active'?'active':'sessions'):route==='captureReview'?(selectedHandId?'handDetail':'active'):route==='editSession'?'sessions':route==='log'||route==='active'?'home':route==='breathe'?'prep':route==='goals'?'breathe':route==='handsIntro'?'goals':route==='handPlay'?'handsIntro':route==='handExplain'?'handPlay':route==='handsComplete'?'handsIntro':route==='review'?'handsIntro':'home'));
   document.querySelectorAll('[data-start-prep]').forEach(el=>el.onclick=beginPreparation);
@@ -1871,9 +1905,11 @@ function bind(){
   document.querySelectorAll('[data-money-point]').forEach(el=>{ el.onpointerenter=()=>showMoneyPoint(el.dataset.moneyPoint); el.onclick=()=>showMoneyPoint(el.dataset.moneyPoint); });
   const captureBtn=document.querySelector('[data-capture-hand]'); if(captureBtn)captureBtn.onclick=triggerNativeCapture;
   const openActiveHands=document.querySelector('[data-open-active-hands]'); if(openActiveHands)openActiveHands.onclick=()=>{selectedSessionHandsId='active';navigate('sessionHands');};
-  document.querySelectorAll('[data-open-session]').forEach(el=>{const open=()=>{editingSessionId=el.dataset.openSession;navigate('sessionDetail');};el.onclick=e=>{if(e.target.closest('button'))return;open();};el.onkeydown=e=>{if(e.key==='Enter'){open();}};});
+  document.querySelectorAll('[data-open-session]').forEach(el=>{const open=()=>{editingSessionId=el.dataset.openSession;navigate('sessionDetail');};el.onclick=e=>{if(e.target.closest('button'))return;open();};el.onkeydown=e=>{if(e.target!==el)return;if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-hands-filter]').forEach(el=>el.onclick=()=>{handsFilter=el.dataset.handsFilter;render();});
-  const dropZone=document.getElementById('handDropZone'); if(dropZone){dropZone.ondragover=e=>{e.preventDefault();dropZone.classList.add('dragging');};dropZone.ondragleave=()=>dropZone.classList.remove('dragging');dropZone.ondrop=e=>{e.preventDefault();dropZone.classList.remove('dragging');const file=[...(e.dataTransfer?.files||[])].find(f=>f.type.startsWith('image/'));if(!file)return;const reader=new FileReader();reader.onload=()=>window.innerGameReceiveScreenshot(reader.result,'desktop_drop');reader.readAsDataURL(file);};}
+  const search=document.getElementById('handsSearch');if(search)search.oninput=()=>{const caret=search.selectionStart;handsSearch=search.value;render();const replacement=document.getElementById('handsSearch');replacement.focus({preventScroll:true});if(caret!==null)replacement.setSelectionRange(caret,caret);};
+  const upload=document.getElementById('handUpload'),uploadButton=document.querySelector('[data-upload-hand]');if(upload&&uploadButton){uploadButton.onclick=()=>upload.click();upload.onchange=()=>importHandScreenshot(upload.files[0]);}
+  const dropZone=document.getElementById('handDropZone'); if(dropZone){dropZone.ondragover=e=>{e.preventDefault();dropZone.classList.add('dragging');};dropZone.ondragleave=()=>dropZone.classList.remove('dragging');dropZone.ondrop=e=>{e.preventDefault();dropZone.classList.remove('dragging');importHandScreenshot([...(e.dataTransfer?.files||[])].find(f=>f.type.startsWith('image/')));};}
     document.querySelectorAll('[data-open-session-hands]').forEach(el=>{const open=()=>{selectedSessionHandsId=el.dataset.openSessionHands;navigate('sessionHands');};el.onclick=e=>{e.stopPropagation();open();};el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-open-library-session]').forEach(el=>{const open=()=>{selectedSessionHandsId=el.dataset.openLibrarySession;navigate('sessionHands');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
   document.querySelectorAll('[data-open-hand]').forEach(el=>{const open=()=>{handReturnRoute=route;selectedHandId=el.dataset.openHand;navigate('handDetail');};el.onclick=open;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}};});
