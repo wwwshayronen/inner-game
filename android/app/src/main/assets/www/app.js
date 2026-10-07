@@ -878,13 +878,41 @@ function solverReview(){
     <button class="btn ghost" data-save-solver-spot>Save details</button>
     ${solverDebugPanel(h)}`,'sessions');
 }
+function solverFrequencyLabel(frequency){
+  const percent=Math.max(0,Math.min(1,Number(frequency)||0))*100;
+  return percent>0&&percent<.01?'<0.01%':`${Number(percent.toFixed(percent<1?2:1))}%`;
+}
+function solverStrategyAction(item){
+  const action=String(item?.action||'').trim();
+  return /^(bet|raise)$/i.test(action)&&Number(item.amount_bb)>0?`${action} ${Number(item.amount_bb)}`:action;
+}
+function solverMostFrequentAction(strategy=[]){
+  return solverStrategyAction([...strategy].sort((a,b)=>(Number(b.frequency)||0)-(Number(a.frequency)||0))[0]);
+}
+function solverStrategyItem(strategy=[],action=''){
+  const normalized=String(action).toLowerCase(),[kind,amount]=normalized.split(/\s+/);
+  return strategy.find(item=>String(item.action||'').toLowerCase()===normalized||
+    String(item.action||'').toLowerCase()===kind&&Number.isFinite(Number(amount))&&Math.abs(Number(item.amount_bb)-Number(amount))<.001);
+}
+function solverResultExplanation(solution,bestAction){
+  const strategy=solution.strategy||[],frequentAction=solverMostFrequentAction(strategy);
+  const frequent=solverStrategyItem(strategy,frequentAction),best=solverStrategyItem(strategy,bestAction);
+  if(solution.evs?.actions?.length&&frequent&&best&&Number(best.frequency)+1e-9<Number(frequent.frequency)){
+    return {
+      summary:`The solver uses ${solverActionLabel(frequentAction)} most often (${solverFrequencyLabel(frequent.frequency)}). ${solverActionLabel(bestAction)} has the highest reported EV.`,
+      details:"The strategy mix and EV ranking differ at this node. These are the provider's estimates; the highest-EV action is not necessarily the most frequent action.",
+      facts:[]
+    };
+  }
+  return solution.evReferenceVersion===1?solution.explanation:null;
+}
 function solverStrategyBars(strategy=[]){
   if(!strategy.length)return '<div class="empty">No mixed-strategy data returned.</div>';
   return strategy.map(x=>{
     const freq=Math.max(0,Math.min(1,Number(x.frequency)||0));
     const action=String(x.action||'Action');
     const amount=x.amount_bb? ` · ${Number(x.amount_bb).toFixed(1)} BB` : '';
-    return `<div class="solver-strategy-row"><div class="row between"><span>${esc(action)}${esc(amount)}</span><strong>${Math.round(freq*100)}%</strong></div><div class="solver-bar"><i style="width:${freq*100}%"></i></div></div>`;
+    return `<div class="solver-strategy-row"><div class="row between"><span>${esc(action)}${esc(amount)}</span><strong>${esc(solverFrequencyLabel(freq))}</strong></div><div class="solver-bar"><i style="width:${freq*100}%"></i></div></div>`;
   }).join('');
 }
 function solverEvNumber(value){
@@ -939,18 +967,14 @@ function solverResult(){
   if(!solverResultMatchesSpot(s,h.solverSpot))return appShell(`${header('GTO <span class="accent">Solution</span>','')}
     <section class="card pad solver-error-card"><strong>This result needs a new solve</strong><p>The saved actions do not match the selected decision. Review the hand and solve again.</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Review spot</button></section>`,'sessions');
   const ev=solverEvDisplay(s),bestEv=ev?.decision?ev.best:null;
-  const bestAction=ev?.bestAction||[...(s.strategy||[])].sort((a,b)=>Number(b.frequency)-Number(a.frequency))[0]?.action||s.bestAction||'—';
-  const bestKind=String(bestAction).toLowerCase();
-  const mix=(s.strategy||[]).find(item=>{
-    const name=String(item.action).toLowerCase();
-    return name===bestKind||(bestKind.startsWith(name+' ')&&Number(item.amount_bb)===Number(bestKind.split(' ')[1]));
-  });
-  const explanation=s.evReferenceVersion===1?s.explanation:null;
+  const bestAction=ev?.bestAction||solverMostFrequentAction(s.strategy||[])||s.bestAction||'—';
+  const mix=solverStrategyItem(s.strategy||[],bestAction);
+  const explanation=solverResultExplanation(s,bestAction);
   return appShell(`${header('GTO <span class="accent">Solution</span>','')}
     ${h.solverSpot?`<div class="solver-decision-context"><strong>${esc((h.solverSpot.heroCards||[]).join(' '))} · ${esc(h.solverSpot.decisionStreet)}</strong><span>${esc((h.solverSpot.board||[]).slice(0,({flop:3,turn:4,river:5})[h.solverSpot.decisionStreet]||0).join(' '))}</span></div>`:''}
     <section class="card pad solver-answer-card">
-      <div><small>${ev?'Highest-EV action':'Most frequent action'}</small><strong>${esc(solverActionLabel(bestAction))}</strong></div>
-      <div><small>GTO mix</small><strong class="positive">${mix?Math.round(Number(mix.frequency)*100)+'%':'—'}</strong></div>
+      <div><small>${ev?'Highest reported EV':'Most frequent action'}</small><strong>${esc(solverActionLabel(bestAction))}</strong></div>
+      <div><small>GTO mix</small><strong class="positive">${mix?esc(solverFrequencyLabel(mix.frequency)):'—'}</strong></div>
       ${bestEv!==null?`<div class="solver-best-ev"><small>EV from this decision</small><strong>${bestEv.toFixed(3)} BB</strong></div>`:''}
     </section>
     <section class="card pad solver-strategy-card"><div class="section-title">GTO strategy</div>${solverStrategyBars(s.strategy||[])}</section>

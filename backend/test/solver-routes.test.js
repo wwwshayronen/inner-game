@@ -5,8 +5,18 @@ import { readFileSync } from "node:fs";
 process.env.NODE_ENV = "test";
 process.env.OPENAI_API_KEY = "test-key";
 process.env.POKERAI_API_KEY = "test-key";
-const { app, client, solverReadiness, solverActionHistoryIssues, solverInspectJsonSchema, expectedPostflopSegments, legalSolverActions, actionFreq } = await import("../src/server.js");
+const { app, client, solverReadiness, solverActionHistoryIssues, solverInspectJsonSchema, expectedPostflopSegments, legalSolverActions, actionFreq, strategyBest, explainSolution } = await import("../src/server.js");
 const screenshot = () => JSON.parse(readFileSync(new URL("fixtures/105496.json", import.meta.url)));
+
+test("an EV and frequency disagreement gets a factual explanation without invented reasons",async t=>{
+  t.mock.method(client.responses,"create",()=>{assert.fail("A model must not explain this disagreement.");});
+  const strategy=[{action:'call',frequency:.8072},{action:'raise',amount_bb:37,frequency:.0013},{action:'fold',frequency:.19}];
+  const explanation=await explainSolution({strategy,evs:{actions:['CALL','RAISE 37','FOLD'],values:[5.097,13.688,0]},bestAction:'raise 37.000000'});
+  assert.match(explanation.summary,/CALL most often \(80\.7%\)/);
+  assert.match(explanation.summary,/RAISE 37\.0 BB has the highest reported EV/);
+  assert.match(explanation.details,/differ at this node/);
+  assert.equal(strategyBest([{action:'bet',amount_bb:15,frequency:.7},{action:'bet',amount_bb:5,frequency:.3}]),'bet 15');
+});
 
 // Exercise the real Express handlers without opening a port or calling providers.
 async function request(path, body) {
