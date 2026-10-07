@@ -648,6 +648,14 @@ function observedSizingConfig(spot){
   return {bet_sizes,raise_sizes,donk_sizes};
 }
 async function explainSolution({spot,strategy,evs,bestAction,provider,assumptions}){
+  const frequentAction=strategyBest(strategy);
+  if(evs?.actions?.length && frequentAction && bestAction && actionFreq(strategy,bestAction)+1e-9<actionFreq(strategy,frequentAction)){
+    return {
+      summary:`The solver uses ${solverActionText(frequentAction)} most often (${solverFrequencyText(actionFreq(strategy,frequentAction))}). ${solverActionText(bestAction)} has the highest reported EV.`,
+      details:"The strategy mix and EV ranking differ at this node. These are the provider's estimates; the highest-EV action is not necessarily the most frequent action.",
+      facts:[]
+    };
+  }
   try{
     const response=await client.responses.create({
       model:MODEL,
@@ -674,7 +682,18 @@ async function explainSolution({spot,strategy,evs,bestAction,provider,assumption
   }
 }
 function strategyBest(strategy=[]){
-  return [...strategy].sort((a,b)=>(Number(b.frequency)||0)-(Number(a.frequency)||0))[0]?.action || "";
+  const item=[...strategy].sort((a,b)=>(Number(b.frequency)||0)-(Number(a.frequency)||0))[0];
+  if(!item)return "";
+  const action=String(item.action||"").trim();
+  return /^(bet|raise)$/i.test(action)&&Number(item.amount_bb)>0?`${action} ${Number(item.amount_bb)}`:action;
+}
+function solverActionText(action){
+  const match=String(action).match(/^(BET|RAISE)\s+([\d.]+)$/i);
+  return match?`${match[1].toUpperCase()} ${Number(match[2]).toFixed(1)} BB`:String(action).toUpperCase();
+}
+function solverFrequencyText(frequency){
+  const percent=Math.max(0,Math.min(1,Number(frequency)||0))*100;
+  return percent>0&&percent<.01?"<0.01%":`${Number(percent.toFixed(percent<1?2:1))}%`;
 }
 function evBest(actions=[],values=[]){
   return bestEvAction(actions,values);
@@ -1093,5 +1112,7 @@ export {
   reconstructSolverMath,
   solverSpotInputSchema,
   legalSolverActions,
-  actionFreq
+  actionFreq,
+  strategyBest,
+  explainSolution
 };

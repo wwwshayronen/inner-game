@@ -156,3 +156,35 @@ test("mistyped action streets and amounts are reported instead of silently dropp
   assert.ok(issues.some(issue=>issue.includes('invalid street')));
   assert.ok(issues.some(issue=>issue.includes('invalid amount')));
 });
+
+test("small nonzero solver frequencies remain visible and exact zero stays zero",()=>{
+  const {context}=appContext(async()=>{});
+  for(const [frequency,label] of [[.0013,'0.13%'],[.000001,'<0.01%'],[.8072,'80.7%'],[0,'0%'],[1,'100%']]){
+    context.frequency=frequency;
+    assert.equal(vm.runInContext("solverFrequencyLabel(frequency)",context),label);
+  }
+  context.strategy=[{action:'raise',amount_bb:37,frequency:.0013}];
+  assert.match(vm.runInContext("solverStrategyBars(strategy)",context),/0\.13%/);
+});
+
+test("a cached explanation cannot misrepresent the strategy when its EV ranking differs",()=>{
+  const {context}=appContext(async()=>{});
+  context.solution={
+    evReferenceVersion:1,
+    strategy:[{action:'call',frequency:.8072},{action:'raise',amount_bb:37,frequency:.0013},{action:'fold',frequency:.19}],
+    evs:{actions:['CALL','RAISE 37.000000','FOLD'],values:[5.097,13.688,0]},
+    explanation:{summary:'Folding is least favored; raising is preferred.'}
+  };
+  const explanation=vm.runInContext("solverResultExplanation(solution,'RAISE 37.000000')",context);
+  assert.match(explanation.summary,/CALL most often \(80\.7%\)/);
+  assert.match(explanation.summary,/RAISE 37\.0 BB has the highest reported EV/);
+  assert.match(explanation.details,/differ at this node/);
+  assert.doesNotMatch(explanation.summary,/least favored|raising is preferred/);
+});
+
+test("the most frequent action retains its bet size when EVs are unavailable",()=>{
+  const {context}=appContext(async()=>{});
+  context.strategy=[{action:'bet',amount_bb:15,frequency:.7},{action:'bet',amount_bb:5,frequency:.3}];
+  assert.equal(vm.runInContext("solverMostFrequentAction(strategy)",context),'bet 15');
+  assert.equal(vm.runInContext("solverStrategyItem(strategy,solverMostFrequentAction(strategy)).frequency",context),.7);
+});
