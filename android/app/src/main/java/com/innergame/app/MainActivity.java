@@ -512,14 +512,13 @@ public final class MainActivity extends Activity {
                     throw new CaptureStageException("IMAGE_READ", "No readable image data");
                 }
 
-                // Background capture is intentionally offline-first. Android only persists
-                // the screenshot here; the proven WebView analysis path runs next time
-                // Inner Game is foregrounded.
+                // Persist before scheduling native analysis so the image and request
+                // survive process death and temporary network loss.
                 persistQueuedScreenshot(captureId, dataUrl, now, session.id);
                 logCaptureDiagnostic(captureId, "QUEUED", "chars=" + dataUrl.length());
                 notifyAutoCaptureQueued(captureId);
 
-                // If Inner Game happens to already be foregrounded, process immediately.
+                // Import the pending hand if Inner Game is already foregrounded.
                 runOnUiThread(this::dispatchQueuedScreenshots);
             } catch (Exception error) {
                 String stage = error instanceof CaptureStageException

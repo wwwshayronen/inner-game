@@ -169,7 +169,8 @@ app.whenReady().then(() => {
     const view=job.kind==='solve'?'solverResult':job.kind==='reconstruction'?'solverReview':'handDetail';
     if(notify&&Notification.isSupported()){
       const label=job.kind==='solve'?'GTO solution':job.kind==='reconstruction'?'Hand reconstruction':'Hand analysis';
-      const notification=new Notification({title:label+(job.status==='failed'?' needs attention':' ready'),body:job.error?.message||'Tap to open your hand.'});
+      const needsReview=job.kind==='reconstruction'&&job.result?.ready===false||job.kind==='analysis'&&job.result?.isPokerHand===false;
+      const notification=new Notification({title:label+(job.status==='failed'||needsReview?' needs attention':' ready'),body:job.error?.message||(needsReview?'Tap to review the hand details.':'Tap to open your hand.')});
       notification.on('click',async()=>{
         if(!mainWindow){createWindow();mainWindow.webContents.once('did-finish-load',()=>mainWindow.webContents.executeJavaScript(`window.innerGameOpenHand(${JSON.stringify(job.handId)},${JSON.stringify(view)})`));return;}
         if(mainWindow.isMinimized())mainWindow.restore();mainWindow.show();mainWindow.focus();
