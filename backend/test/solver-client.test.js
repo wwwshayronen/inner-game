@@ -27,6 +27,48 @@ function appContext(fetch) {
   return { context, hand, elapsed: () => elapsed };
 }
 
+function enableDebug(context){
+  vm.runInContext(source.slice(source.indexOf('function solverDebugValue('),source.indexOf('function solverDebugText(')),context);
+}
+
+test('API debug preserves JSON errors and non-JSON server bodies without consuming the response',async()=>{
+  let count=0;
+  const {context,hand}=appContext(async()=>++count===1?
+    Response.json({error:'invalid_spot',validation:[{path:'board',message:'Missing card'}]},{status:422}):
+    new Response('<html>Gateway unavailable</html>',{status:502}));
+  enableDebug(context);
+  context.options={method:'POST',body:JSON.stringify({spot:{heroCards:['Kc','Qd']}})};
+  const first=await vm.runInContext("solverFetch(hand,'https://api.example/solver/solve',options)",context);
+  assert.equal((await first.json()).validation[0].path,'board');
+  const second=await vm.runInContext("solverFetch(hand,'https://api.example/solver/poll',options)",context);
+  assert.equal(await second.text(),'<html>Gateway unavailable</html>');
+  assert.equal(hand.solverDebug[0].data.status,422);
+  assert.deepEqual(JSON.parse(JSON.stringify(hand.solverDebug[0].data.request)),{spot:{heroCards:['Kc','Qd']}});
+  assert.equal(hand.solverDebug[1].data.response,'<html>Gateway unavailable</html>');
+  const panel=vm.runInContext('solverHttpPanel(hand)',context);
+  assert.match(panel,/HTTP 422/);assert.match(panel,/&lt;html&gt;/);assert.doesNotMatch(panel,/<html>/);
+});
+
+test('API debug records offline errors and omits screenshot data',async()=>{
+  const {context,hand}=appContext(async()=>{throw new Error('Network unavailable');});
+  enableDebug(context);
+  context.options={method:'POST',body:JSON.stringify({imageDataUrl:'data:image/jpeg;base64,private-image',hand:{heroCards:['Kc','Qd']}})};
+  await assert.rejects(vm.runInContext("solverFetch(hand,'https://api.example/solver/inspect',options)",context),/Network unavailable/);
+  assert.equal(hand.solverDebug[0].data.status,0);
+  assert.equal(hand.solverDebug[0].data.request.imageDataUrl,'[omitted]');
+  assert.equal(hand.solverDebug[0].data.error,'Network unavailable');
+  assert.doesNotMatch(JSON.stringify(hand.solverDebug),/private-image/);
+});
+
+test('API debug marks oversized bodies while retaining HTTP metadata',async()=>{
+  const {context,hand}=appContext(async()=>Response.json({large:'x'.repeat(40000)}));
+  enableDebug(context);context.options={method:'POST',body:'{}'};
+  await vm.runInContext("solverFetch(hand,'https://api.example/solver/poll',options)",context);
+  assert.equal(hand.solverDebug[0].data.status,200);
+  assert.equal(hand.solverDebug[0].data.response.truncated,true);
+  assert.ok(hand.solverDebug[0].data.response.preview.length<=32000);
+});
+
 test("mobile waits past the old 60-second request window using short inspection polls", async () => {
   const calls = [];
   const { context, hand, elapsed } = appContext(async (url, options) => {
@@ -188,3 +230,4 @@ test("the most frequent action retains its bet size when EVs are unavailable",()
   assert.equal(vm.runInContext("solverMostFrequentAction(strategy)",context),'bet 15');
   assert.equal(vm.runInContext("solverStrategyItem(strategy,solverMostFrequentAction(strategy)).frequency",context),.7);
 });
+

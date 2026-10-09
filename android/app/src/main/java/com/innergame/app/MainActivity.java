@@ -855,12 +855,15 @@ public final class MainActivity extends Activity {
         for (File file : HandJobStore.files(this)) {
             try {
                 JSONObject job = HandJobStore.read(this, file.getName().replace(".json", ""));
-                if (job == null || "pending".equals(job.optString("status"))) continue;
+                if (job == null) continue;
+                boolean pending = "pending".equals(job.optString("status"));
+                if (pending && "analysis".equals(job.optString("kind"))) continue;
                 if (!"analysis".equals(job.optString("kind"))) job.remove("payload");
                 String json = job.toString();
+                String callback = pending ? "innerGameReceiveHandJobProgress" : "innerGameReceiveHandJob";
                 webView.post(() -> {
                     if (webView != null) webView.evaluateJavascript(
-                            "window.innerGameReceiveHandJob && window.innerGameReceiveHandJob(" + JSONObject.quote(json) + ")", null);
+                            "window." + callback + " && window." + callback + "(" + JSONObject.quote(json) + ")", null);
                 });
             } catch (Exception ignored) {}
         }
@@ -1299,3 +1302,4 @@ public final class MainActivity extends Activity {
         super.onDestroy();
     }
 }
+

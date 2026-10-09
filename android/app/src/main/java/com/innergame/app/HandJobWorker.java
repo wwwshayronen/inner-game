@@ -9,6 +9,8 @@ import androidx.work.ForegroundInfo;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 import org.json.JSONObject;
+import org.json.JSONArray;
+import java.time.Instant;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -34,9 +36,54 @@ public class HandJobWorker extends Worker {
         Response(int status, JSONObject body) { this.status=status; this.body=body; }
     }
     HttpURLConnection openConnection(URL url) throws Exception { return (HttpURLConnection) url.openConnection(); }
-    private Response post(String base, String route, JSONObject payload) throws Exception {
-        HttpURLConnection connection = openConnection(new URL(base + route));
+    private Object debugValue(Object value) throws Exception {
+        Object clean = redactDebug(value);
+        String text = String.valueOf(clean);
+        return text.length() <= 16000 ? clean : new JSONObject().put("truncated",true)
+                .put("totalCharacters",text.length()).put("preview",text.substring(0,16000));
+    }
+    private Object redactDebug(Object value) throws Exception {
+        if(value instanceof JSONObject) {
+            JSONObject source=(JSONObject)value, clean=new JSONObject();
+            java.util.Iterator<String> keys=source.keys();
+            while(keys.hasNext()) {
+                String key=keys.next();
+                clean.put(key,key.matches("(?i)imageDataUrl|authorization|apiKey|token") ? "[omitted]" : redactDebug(source.get(key)));
+            }
+            return clean;
+        }
+        if(value instanceof JSONArray) {
+            JSONArray source=(JSONArray)value,clean=new JSONArray();
+            for(int i=0;i<source.length();i++)clean.put(redactDebug(source.get(i)));
+            return clean;
+        }
+        if(value instanceof String && ((String)value).startsWith("data:image/"))return "[screenshot omitted]";
+        return value;
+    }
+    private void recordHttp(JSONObject job, String url, JSONObject request, int status, Object response, String error, long started) {
+        if("analysis".equals(job.optString("kind")))return;
         try {
+            JSONArray events=job.optJSONArray("httpTrace");if(events==null)events=new JSONArray();
+            JSONObject event=new JSONObject().put("at",Instant.now().toString()).put("method","POST").put("url",url)
+                    .put("request",debugValue(request)).put("status",status).put("durationMs",System.currentTimeMillis()-started);
+            if(response!=null)event.put("response",debugValue(response));
+            if(error!=null)event.put("error",error);
+            JSONObject last=events.length()>0?events.optJSONObject(events.length()-1):null;
+            if(status==202 && last!=null && last.optInt("status")==status && url.equals(last.optString("url"))
+                    && String.valueOf(event.opt("request")).equals(String.valueOf(last.opt("request")))
+                    && String.valueOf(event.opt("response")).equals(String.valueOf(last.opt("response")))) {
+                event.put("at",last.optString("at"));event.put("repeats",last.optInt("repeats",1)+1);events.put(events.length()-1,event);
+            } else events.put(event);
+            while(events.length()>20 || events.length()>1 && events.toString().length()>160000)events.remove(0);
+            job.put("httpTrace",events);
+            HandJobStore.write(getApplicationContext(),job,false);
+        } catch(Exception ignored) { /* Diagnostics must not interrupt the solve. */ }
+    }
+    private Response post(JSONObject job, String base, String route, JSONObject payload) throws Exception {
+        long started=System.currentTimeMillis();boolean recorded=false;
+        HttpURLConnection connection=null;
+        try {
+            connection = openConnection(new URL(base + route));
             connection.setRequestMethod("POST");connection.setConnectTimeout(20000);connection.setReadTimeout(30000);
             connection.setDoOutput(true);connection.setRequestProperty("Content-Type", "application/json");
             byte[] bytes = payload.toString().getBytes(StandardCharsets.UTF_8);connection.setFixedLengthStreamingMode(bytes.length);
@@ -47,9 +94,15 @@ public class HandJobWorker extends Worker {
                 if (input == null) throw new IllegalStateException("No response from hand processing service.");
                 byte[] buffer = new byte[8192];int read;
                 while ((read=input.read(buffer))!=-1) { output.write(buffer,0,read);if(output.size()>6_000_000)throw new IllegalStateException("Hand result too large."); }
-                return new Response(status,new JSONObject(output.toString(StandardCharsets.UTF_8.name())));
+                String raw=output.toString(StandardCharsets.UTF_8.name());
+                Object body;try {body=new JSONObject(raw);}catch(Exception invalidJson){body=raw;}
+                recordHttp(job,base+route,payload,status,body,null,started);recorded=true;
+                return new Response(status,new JSONObject(raw));
             }
-        } finally { connection.disconnect(); }
+        } catch(Exception error) {
+            if(!recorded)recordHttp(job,base+route,payload,0,null,error.getClass().getSimpleName()+": "+error.getMessage(),started);
+            throw error;
+        } finally { if(connection!=null)connection.disconnect(); }
     }
     @NonNull @Override public Result doWork() {
         Context context=getApplicationContext();String id=getInputData().getString("requestId");
@@ -79,7 +132,7 @@ public class HandJobWorker extends Worker {
             if(job.optString("serverJobId").isEmpty()) {
                 stage="submit";
                 JSONObject request=new JSONObject();request.put("requestId",id);request.put("kind",job.getString("kind"));request.put("payload",job.getJSONObject("payload"));
-                Response response=post(base,"/hand-jobs/start",request);
+                Response response=post(job,base,"/hand-jobs/start",request);
                 if(response.status>=500||response.status==429)return Result.retry();
                 if(response.status>=400) { job.put("status","failed");job.put("error",new JSONObject().put("message",response.body.optString("message",response.body.optString("error","Could not submit this hand.")))); }
                 else { job.put("serverJobId",response.body.getString("jobId"));if(!HandJobStore.write(context,job,false))return Result.success(); }
@@ -88,7 +141,7 @@ public class HandJobWorker extends Worker {
             stage="poll";
             while("pending".equals(job.optString("status"))&&!isStopped()&&System.currentTimeMillis()<deadline) {
                 if(HandJobStore.read(context,id)==null)return Result.success();
-                Response response=post(base,"/hand-jobs/poll",new JSONObject().put("jobId",job.getString("serverJobId")));
+                Response response=post(job,base,"/hand-jobs/poll",new JSONObject().put("jobId",job.getString("serverJobId")));
                 if(response.status>=500||response.status==429)return Result.retry();
                 if(response.status>=400) { job.put("status","failed");job.put("error",new JSONObject().put("message",response.body.optString("message",response.body.optString("error","Hand processing was interrupted."))));break; }
                 String status=response.body.optString("status");
@@ -120,3 +173,4 @@ public class HandJobWorker extends Worker {
         }
     }
 }
+

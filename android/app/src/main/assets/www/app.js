@@ -205,6 +205,7 @@ function supportsBackgroundHandJobs(){return typeof window.InnerGameNative?.enqu
 function handJobRequestId(){return crypto.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`;}
 async function enqueueBackgroundHandJob(job){
   const request={...job,apiBase:HAND_ANALYSIS_API_URL.replace(/\/$/,'')};
+  if(job.kind!=='analysis')solverDebugAdd(findHandRecord(job.handId),'background:queued',{requestId:job.requestId,kind:job.kind,request:job.payload});
   let response=window.InnerGameNative?.enqueueHandJob
     ?window.InnerGameNative.enqueueHandJob(JSON.stringify(request))
     :await window.InnerGameDesktop.enqueueHandJob(request);
@@ -662,6 +663,10 @@ window.innerGameReceiveHandJob=async input=>{
     const result=job.result||{},invalid=job.status==='complete'&&(
       job.kind==='analysis'?typeof result.isPokerHand!=='boolean':
       job.kind==='reconstruction'?!result.spot:!result.solution);
+    if(job.kind!=='analysis'){
+      solverImportBackgroundTrace(hand,job);
+      solverDebugAdd(hand,'background:result',{requestId,kind:job.kind,status:job.status,response:job.result||job.error||null});
+    }
     const failed=job.status==='failed'||invalid,message=invalid?'The result was incomplete. Your hand is saved; tap Retry.':job.error?.message||'Processing failed. Your hand is saved; tap Retry.';
     if(job.kind==='analysis'){
       if(!failed&&!result.isPokerHand&&hand.autoCandidate){removeCapturedHand(hand.id);nativeCall('ackHandJob',{requestId});refreshCaptureUi();return true;}
@@ -755,20 +760,78 @@ function handDetail(){
       <button class="btn primary solver-primary-btn" data-solve-hand="${esc(h.id)}">${h.solverResult?'View GTO solution':h.solverStatus==='pending'?'Solver running…':'Solve this hand'} <span>›</span></button>
       <button class="btn secondary" data-edit-hand="${esc(h.id)}">Edit Details</button>
       <button class="btn ghost danger-text" data-delete-hand="${esc(h.id)}">Delete Hand</button>
-    </div>`,'sessions');
+    </div>${solverDebugPanel(h)}`,'sessions');
 }
 
 const SOLVER_DEBUG_BUILD=true;
+function solverDebugValue(value){
+  const text=JSON.stringify(value, (key,item)=>{
+    if(/^(imageDataUrl|authorization|apiKey|token)$/i.test(key))return '[omitted]';
+    return typeof item==='string'&&item.startsWith('data:image/')?'[screenshot omitted]':item;
+  });
+  if(text===undefined)return null;
+  return text.length>32000?{truncated:true,totalCharacters:text.length,preview:text.slice(0,32000)}:JSON.parse(text);
+}
 function solverDebugAdd(hand,stage,data={}){
   if(!hand)return;
   if(!Array.isArray(hand.solverDebug))hand.solverDebug=[];
-  hand.solverDebug.push({at:new Date().toISOString(),stage,data});
+  hand.solverDebug.push({at:new Date().toISOString(),stage,data:Object.fromEntries(Object.entries(data).map(([key,value])=>[key,solverDebugValue(value)]))});
   if(hand.solverDebug.length>80)hand.solverDebug=hand.solverDebug.slice(-80);
+  while(hand.solverDebug.length>1&&JSON.stringify(hand.solverDebug).length>200000)hand.solverDebug.shift();
   save();
+  solverRefreshDebugPanel(hand);
+}
+async function solverFetch(hand,url,options){
+  const started=Date.now();
+  const request=JSON.parse(options.body||'{}');
+  try{
+    const response=await fetch(url,options);
+    const raw=await response.clone().text();
+    let body;try{body=JSON.parse(raw);}catch{body=raw;}
+    solverDebugAdd(hand,'http',{method:options.method||'GET',url,request,status:response.status,durationMs:Date.now()-started,response:body});
+    return response;
+  }catch(error){
+    solverDebugAdd(hand,'http',{method:options.method||'GET',url,request,status:0,durationMs:Date.now()-started,error:String(error?.message||error)});
+    throw error;
+  }
+}
+function solverImportBackgroundTrace(hand,job){
+  const trace=job.httpTrace||[];
+  if(trace.length)hand.solverBackgroundHttp={requestId:job.requestId,events:trace.slice(-20).map(event=>({...event,request:solverDebugValue(event.request),response:solverDebugValue(event.response)}))};
+  save();solverRefreshDebugPanel(hand);
+}
+window.innerGameReceiveHandJobProgress=input=>{
+  const job=typeof input==='string'?JSON.parse(input):input;
+  if(!job||job.kind==='analysis'||(state.dismissedHandJobIds||[]).includes(job.requestId))return false;
+  const hand=findHandRecord(job.handId),field={reconstruction:'backgroundReconstructionId',solve:'backgroundSolveId'}[job.kind];
+  if(!hand||!field||hand[field]!==job.requestId)return false;
+  solverImportBackgroundTrace(hand,job);return true;
+};
+function solverHttpEvents(hand){
+  const background=hand?.solverBackgroundHttp?.events;
+  return [...(hand?.solverDebug||[]).filter(event=>event.stage==='http').map(event=>({at:event.at,...event.data})),
+    ...(Array.isArray(background)?background:[])].sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+}
+function solverHttpPanel(hand){
+  const events=solverHttpEvents(hand);
+  if(!events.length)return '<p class="field-hint">Run screenshot reconstruction or the solver to record a request and response. Android background requests appear here too.</p>';
+  return events.map(event=>'<details class="solver-http-event" data-debug-key="'+esc(event.at+'|'+event.url)+'"><summary>'+esc((event.status?'HTTP '+event.status:'Connection error')+' · '+(event.method||'POST')+' '+event.url)+'</summary>'+
+    '<p class="field-hint">'+esc(event.at||'')+' · '+esc(event.durationMs??0)+' ms'+(event.repeats?' · '+esc(event.repeats)+' identical polls':'')+'</p>'+
+    '<h4>Request body</h4><pre>'+esc(JSON.stringify(event.request,null,2))+'</pre><h4>'+(event.error?'Connection error':'Server response')+'</h4><pre>'+esc(typeof event.response==='string'?event.response:JSON.stringify(event.response??event.error,null,2))+'</pre></details>').join('');
+}
+function solverRefreshDebugPanel(hand){
+  if(typeof document==='undefined'||solverHand()?.id!==hand?.id)return;
+  const exchanges=document.getElementById('solverHttpOutput'),trace=document.getElementById('solverDebugOutput');
+  if(exchanges){
+    const open=new Set([...exchanges.querySelectorAll('details[open]')].map(element=>element.dataset.debugKey));
+    exchanges.innerHTML=solverHttpPanel(hand);
+    exchanges.querySelectorAll('details').forEach(element=>{element.open=open.has(element.dataset.debugKey);});
+  }
+  if(trace)trace.textContent=solverDebugText(hand);
 }
 function solverDebugText(hand){
   return JSON.stringify({
-    build:"solver-debug-v1",
+    build:"solver-debug-v2",
     handId:hand?.id||"",
     title:hand?.title||"",
     solverStatus:hand?.solverStatus||"",
@@ -776,17 +839,21 @@ function solverDebugText(hand){
     spotVersion:hand?.solverSpotVersion||0,
     spot:hand?.solverSpot||null,
     job:hand?.solverJob?{provider:hand.solverJob.provider,decisionStreet:hand.solverJob.decisionStreet,heroHand:hand.solverJob.heroHand,expectedSegments:hand.solverJob.expectedSegments,debugRequestId:hand.solverJob.debugRequestId}:null,
-    events:hand?.solverDebug||[]
+    events:hand?.solverDebug||[],
+    backgroundHttp:hand?.solverBackgroundHttp||null,
+    solution:hand?.solverResult||null
   },null,2);
 }
 function solverDebugPanel(hand){
   if(!SOLVER_DEBUG_BUILD)return "";
   const count=(hand?.solverDebug||[]).length;
   const errorBadge=hand?.solverError?'<span class="negative">error</span>':'';
-  return '<details class="card pad solver-debug-card"><summary>Solver diagnostics</summary>'+
+  return '<details class="card pad solver-debug-card"><summary>Solver API debug · requests & responses</summary>'+
     '<div class="row between"><div><small class="eyebrow">DEBUG BUILD</small><div class="section-title">Solver trace</div></div><button class="btn tiny secondary" data-copy-solver-debug>Copy trace</button></div>'+
     '<div class="solver-debug-summary"><span>'+count+' events</span><span>'+esc(hand?.solverStatus||'idle')+'</span>'+errorBadge+'</div>'+
-    '<pre id="solverDebugOutput">'+esc(solverDebugText(hand))+'</pre>'+
+    '<p class="field-hint">Responses from the Inner Game API. Expand a request to inspect its body and server response. Screenshots are omitted; oversized entries are marked as truncated.</p>'+
+    '<div id="solverHttpOutput">'+solverHttpPanel(hand)+'</div>'+
+    '<details><summary>Full diagnostic trace</summary><pre id="solverDebugOutput">'+esc(solverDebugText(hand))+'</pre></details>'+
   '</details>';
 }
 function solverHand(){ return solverReviewHandId?findHandRecord(solverReviewHandId):selectedHand(); }
@@ -910,7 +977,7 @@ async function inspectHandForSolver(id,force=false){
       return;
     }
     const apiBase=HAND_ANALYSIS_API_URL.replace(/\/$/,'');
-    let res=await fetch(apiBase+'/solver/inspect',{
+    let res=await solverFetch(hand,apiBase+'/solver/inspect',{
       signal:AbortSignal.timeout(30_000),
       method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
       body:JSON.stringify({imageDataUrl,async:true,hand:{
@@ -927,7 +994,7 @@ async function inspectHandForSolver(id,force=false){
       do{
         await new Promise(resolve=>setTimeout(resolve,1500));
         try{
-          res=await fetch(apiBase+'/solver/inspect/poll',{
+          res=await solverFetch(hand,apiBase+'/solver/inspect/poll',{
             signal:AbortSignal.timeout(30_000),
             method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',
             body:JSON.stringify({inspectionId})
@@ -1000,9 +1067,9 @@ function solverReview(){
   if(!h){route='handsLibrary';return handsLibrary();}
   const loading=solverInspectingHandIds.has(h.id)||h.reconstructionStatus==='pending'&&Boolean(h.backgroundReconstructionId);
   if(loading)return appShell(`${header('Review <span class="accent">Spot</span>','Reading the screenshot for solver-ready details.')}
-    <section class="card pad solver-loading-card"><span class="solver-spinner"></span><strong>Reconstructing the hand…</strong><p>Checking positions, stacks, board and every action up to your decision.${supportsBackgroundHandJobs()?' You can leave the app. We’ll notify you when the hand is ready.':''}</p></section>`,'sessions');
+    <section class="card pad solver-loading-card"><span class="solver-spinner"></span><strong>Reconstructing the hand…</strong><p>Checking positions, stacks, board and every action up to your decision.${supportsBackgroundHandJobs()?' You can leave the app. We’ll notify you when the hand is ready.':''}</p></section>${solverDebugPanel(h)}`,'sessions');
   if(!h.solverSpot)return appShell(`${header('Review <span class="accent">Spot</span>','We need a complete hand before solving.')}
-    <section class="card pad solver-error-card"><strong>Couldn’t prepare this screenshot</strong><p>${esc(h.solverError||'Try reading the screenshot again.')}</p><button class="btn primary" data-reinspect-solver="${esc(h.id)}">Try again</button></section>`,'sessions');
+    <section class="card pad solver-error-card"><strong>Couldn’t prepare this screenshot</strong><p>${esc(h.solverError||'Try reading the screenshot again.')}</p><button class="btn primary" data-reinspect-solver="${esc(h.id)}">Try again</button></section>${solverDebugPanel(h)}`,'sessions');
   const s=h.solverSpot,missing=solverMissing(s),ready=missing.length===0;
   const actionText=solverActionLines(s.actionHistory||[]);
   const notes=(s.extractionNotes||[]).filter(Boolean);
@@ -1133,7 +1200,7 @@ function solverResult(){
       ${solverDebugPanel(h)}`,'sessions');
   }
   if(!solverResultMatchesSpot(s,h.solverSpot))return appShell(`${header('GTO <span class="accent">Solution</span>','')}
-    <section class="card pad solver-error-card"><strong>This result needs a new solve</strong><p>The saved actions do not match the selected decision. Review the hand and solve again.</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Review spot</button></section>`,'sessions');
+    <section class="card pad solver-error-card"><strong>This result needs a new solve</strong><p>The saved actions do not match the selected decision. Review the hand and solve again.</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Review spot</button></section>${solverDebugPanel(h)}`,'sessions');
   const ev=solverEvDisplay(s),bestEv=ev?.decision?ev.best:null;
   const bestAction=ev?.bestAction||solverMostFrequentAction(s.strategy||[])||s.bestAction||'—';
   const mix=solverStrategyItem(s.strategy||[],bestAction);
@@ -1171,7 +1238,7 @@ async function runSolverForHand(id){
     let res=null,json={},lastError=null;
     for(let attempt=0;attempt<4;attempt++){
       try{
-        res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/solve',{
+        res=await solverFetch(h,HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/solve',{
           method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({spot})
         });
         json=await res.json().catch(()=>({}));
@@ -1217,7 +1284,7 @@ async function pollSolverJob(id){
       const pollingJob=current.solverJob;
       let res,json;
       try{
-        res=await fetch(HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/poll',{
+        res=await solverFetch(current,HAND_ANALYSIS_API_URL.replace(/\/$/,'')+'/solver/poll',{
           method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',signal:AbortSignal.timeout(30000),body:JSON.stringify({job:pollingJob})
         });
         json=await res.json().catch(()=>({}));
@@ -1963,3 +2030,4 @@ syncAutoScreenshotWatcher();
 render();
 setTimeout(resumePendingSolverJobs,700);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumePendingSolverJobs();});
+
