@@ -602,3 +602,9 @@ textarea{min-height:98px}
 
 .solver-debug-card>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--muted)}
 .solver-debug-card[open]>summary{margin-bottom:var(--gap)}
+.solver-http-event{margin:12px 0;border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+.solver-http-event>summary{cursor:pointer;overflow-wrap:anywhere;font-size:12px;font-weight:600}
+.solver-http-event h4{margin:14px 0 6px;font-size:12px}
+.solver-http-event pre{font-size:11px;max-height:320px}
+.solver-debug-card>details>summary{cursor:pointer;margin:12px 0;font-size:12px}
+

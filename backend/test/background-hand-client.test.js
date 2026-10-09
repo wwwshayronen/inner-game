@@ -25,6 +25,22 @@ function addHand(app,spot){
 }
 async function deliver(app,job){app.context.job=job;return app.run('window.innerGameReceiveHandJob(job)');}
 
+test('pending Android HTTP responses are visible without acknowledging or completing the job',async()=>{
+  const app=client(),spot=fixture();reconstructSolverMath(spot);addHand(app,spot);
+  await app.run("runSolverForHand('hand')");const queued=app.calls.jobs[0];
+  const event={at:'2026-10-09T12:00:00Z',method:'POST',url:queued.apiBase+'/hand-jobs/start',status:202,
+    request:{kind:'solve',payload:{spot}},response:{jobId:'server-1'},durationMs:42};
+  app.context.job={...queued,status:'pending',httpTrace:[event]};
+  assert.equal(app.run('window.innerGameReceiveHandJobProgress(job)'),true);
+  assert.equal(app.calls.ack.length,0);assert.equal(app.run('findHandRecord("hand").solverStatus'),'pending');
+  assert.match(app.run('solverDebugPanel(findHandRecord("hand"))'),/HTTP 202/);
+  const restored=client(app.saved());
+  assert.equal(restored.run('findHandRecord("hand").solverBackgroundHttp.events[0].response.jobId'),'server-1');
+  await deliver(restored,{...queued,status:'failed',httpTrace:[event],error:{message:'Provider unavailable',payload:{error:'solver_not_configured'}}});
+  assert.match(restored.run('solverDebugText(findHandRecord("hand"))'),/solver_not_configured/);
+  assert.equal(restored.run('findHandRecord("hand").solverBackgroundHttp.events[0].status'),202);
+});
+
 test('reconstruction is queued natively, persists while pending and collects into a relaunched app',async()=>{
   const app=client();addHand(app);await app.run("inspectHandForSolver('hand',true)");
   assert.equal(app.calls.jobs.length,1);const job=app.calls.jobs[0];assert.equal(job.kind,'reconstruction');
@@ -128,3 +144,4 @@ test('notification links open the matching hand and the requested reconstruction
   app.run('window.innerGameOpenHand("hand","solverReview")');assert.equal(app.run('route'),'solverReview');
   app.run('window.innerGameOpenHand("hand","unknown")');assert.equal(app.run('route'),'handDetail');
 });
+

@@ -141,7 +141,30 @@ public class HandJobWorkerTest {
         assertEquals(ListenableWorker.Result.success(),run("solve-one"));
         JSONObject stored=HandJobStore.read(context,"solve-one");
         assertEquals("complete",stored.getString("status"));assertEquals(0,stored.getJSONObject("result").getJSONObject("solution").getJSONObject("ev").getInt("fold"));
+        org.json.JSONArray trace=stored.getJSONArray("httpTrace");assertEquals(2,trace.length());
+        assertEquals(202,trace.getJSONObject(0).getInt("status"));
+        assertEquals("solve",trace.getJSONObject(0).getJSONObject("request").getString("kind"));
+        assertEquals("server-one",trace.getJSONObject(0).getJSONObject("response").getString("jobId"));
+        assertEquals(200,trace.getJSONObject(1).getInt("status"));
+        assertEquals("complete",trace.getJSONObject(1).getJSONObject("response").getString("status"));
         opens(ready("solve"),"solverResult");assertEquals("GTO solution ready",ready("solve").extras.getString(Notification.EXTRA_TITLE));
+    }
+    @Test public void debugPreservesNonJsonFailureAndRedactsScreenshot() throws Exception {
+        JSONObject job=save("debug-html","reconstruction");
+        job.put("payload",new JSONObject().put("imageDataUrl","data:image/jpeg;base64,private-image"));
+        HandJobStore.write(context,job,false);reply(502,"<html>Gateway unavailable</html>");
+        assertEquals(ListenableWorker.Result.retry(),run("debug-html"));
+        JSONObject event=HandJobStore.read(context,"debug-html").getJSONArray("httpTrace").getJSONObject(0);
+        assertEquals(502,event.getInt("status"));assertEquals("<html>Gateway unavailable</html>",event.getString("response"));
+        assertEquals("[omitted]",event.getJSONObject("request").getJSONObject("payload").getString("imageDataUrl"));
+        assertFalse(event.toString().contains("private-image"));
+    }
+    @Test public void debugPreservesNetworkFailureAcrossRetry() throws Exception {
+        save("debug-offline","solve");reply(-1,"");
+        assertEquals(ListenableWorker.Result.retry(),run("debug-offline"));
+        JSONObject event=HandJobStore.read(context,"debug-offline").getJSONArray("httpTrace").getJSONObject(0);
+        assertEquals(0,event.getInt("status"));assertTrue(event.getString("error").contains("Connection lost"));
+        assertEquals("POST",event.getString("method"));
     }
     @Test public void reconstructionMissingDetailsOpensReviewSeparately() throws Exception {
         JSONObject solve=save("first","solve");solve.put("status","complete");
@@ -244,3 +267,4 @@ public class HandJobWorkerTest {
         assertEquals(2,routes.size());opens(ready("solve"),"solverResult");
     }
 }
+
