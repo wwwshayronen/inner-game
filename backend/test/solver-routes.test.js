@@ -81,6 +81,10 @@ test("screenshot job completes and the resulting hand schedules the correct solv
   const solver = providerRequests.find(row => row.url.endsWith("/v1/gto/solver")).body;
   assert.equal(solver.board, "AdTs8c");
   assert.equal(solver.hero, "IP");
+  // Hero called the final raise; villain raised. Supply both weighted GTO
+  // ranges to the correct seats rather than using the known hero hole cards.
+  assert.equal(solver.ip_range, "AQs:0.50000,AKs:0.25000");
+  assert.equal(solver.oop_range, "AQs:0.50000,AKs:0.75000");
   assert.equal(solver.pot, 34.5);
   assert.equal(solver.effective_stack, 156.39);
   assert.ok(solver.bet_sizes.turn.includes(80));
@@ -219,3 +223,4 @@ test("a provider check response is rejected when the hand faces a bet",async t=>
   const result=await request("/solver/poll",{job:{solve:"illegal-actions",heroHand:"AhQh",decisionStreet:"river",spot,expectedSegments:expectedPostflopSegments(spot)}});
   assert.equal(result.statusCode,422);assert.equal(result.body.error,"invalid_solver_decision");
 });
+

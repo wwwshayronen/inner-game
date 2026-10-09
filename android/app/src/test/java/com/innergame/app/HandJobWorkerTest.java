@@ -143,6 +143,49 @@ public class HandJobWorkerTest {
         assertEquals("complete",stored.getString("status"));assertEquals(0,stored.getJSONObject("result").getJSONObject("solution").getJSONObject("ev").getInt("fold"));
         opens(ready("solve"),"solverResult");assertEquals("GTO solution ready",ready("solve").extras.getString(Notification.EXTRA_TITLE));
     }
+    @Test public void oneTapSolveReadsThenSolvesWithoutWebViewAndNotifiesOnlyFinalResult() throws Exception {
+        JSONObject job=save("one-tap","solve");
+        job.put("payload",new JSONObject().put("imageDataUrl","data:image/png;base64,test"));HandJobStore.write(context,job,false);
+        reply(202,"{\"jobId\":\"read-job\"}");
+        reply(200,"{\"status\":\"complete\",\"result\":{\"ready\":true,\"spot\":{\"heroPosition\":\"BTN\",\"missingFields\":[]}}}");
+        reply(202,"{\"jobId\":\"solve-job\"}");
+        reply(200,"{\"status\":\"complete\",\"result\":{\"solution\":{\"bestAction\":\"call\"}}}");
+        assertEquals(ListenableWorker.Result.success(),run("one-tap"));
+        assertEquals("reconstruction",requests.get(0).getString("kind"));
+        assertEquals("one-tap-read",requests.get(0).getString("requestId"));
+        assertEquals("solve",requests.get(2).getString("kind"));
+        assertEquals("one-tap",requests.get(2).getString("requestId"));
+        assertEquals("BTN",requests.get(2).getJSONObject("payload").getJSONObject("spot").getString("heroPosition"));
+        JSONObject stored=HandJobStore.read(context,"one-tap");
+        assertEquals("complete",stored.getString("status"));assertTrue(stored.getJSONObject("payload").has("spot"));
+        assertEquals("BTN",stored.getJSONObject("result").getJSONObject("spot").getString("heroPosition"));
+        assertNull(ready("reconstruction"));opens(ready("solve"),"solverResult");
+    }
+    @Test public void oneTapSolveStopsBeforePaidSolveWhenReadNeedsAttention() throws Exception {
+        JSONObject job=save("incomplete-read","solve");
+        job.put("payload",new JSONObject().put("imageDataUrl","data:image/png;base64,test"));HandJobStore.write(context,job,false);
+        reply(202,"{\"jobId\":\"read-job\"}");
+        reply(200,"{\"status\":\"complete\",\"result\":{\"ready\":false,\"spot\":{\"missingFields\":[\"Hero cards\"]}}}");
+        assertEquals(ListenableWorker.Result.success(),run("incomplete-read"));
+        assertEquals(2,requests.size());
+        JSONObject stored=HandJobStore.read(context,"incomplete-read");
+        assertEquals("failed",stored.getString("status"));assertTrue(stored.getJSONObject("result").has("spot"));
+        assertEquals("Hero cards",stored.getJSONObject("error").getJSONObject("payload").getJSONArray("missingFields").getString(0));
+        opens(ready("solve"),"solverResult");
+    }
+    @Test public void oneTapSolveRetryAfterReadingDoesNotReadOrChargeAgain() throws Exception {
+        JSONObject job=save("resume-solve","solve");
+        job.put("payload",new JSONObject().put("imageDataUrl","data:image/png;base64,test"));HandJobStore.write(context,job,false);
+        reply(202,"{\"jobId\":\"read-job\"}");
+        reply(200,"{\"status\":\"complete\",\"result\":{\"ready\":true,\"spot\":{\"missingFields\":[]}}}");
+        reply(-1,"{}");
+        assertEquals(ListenableWorker.Result.retry(),run("resume-solve"));
+        assertTrue(HandJobStore.read(context,"resume-solve").getJSONObject("payload").has("spot"));
+        reply(202,"{\"jobId\":\"same-solve\"}");reply(200,"{\"status\":\"complete\",\"result\":{\"solution\":{}}}");
+        assertEquals(ListenableWorker.Result.success(),run("resume-solve"));
+        assertEquals("solve",requests.get(3).getString("kind"));
+        assertEquals(requests.get(2).getString("requestId"),requests.get(3).getString("requestId"));
+    }
     @Test public void reconstructionMissingDetailsOpensReviewSeparately() throws Exception {
         JSONObject solve=save("first","solve");solve.put("status","complete");
         HandJobNotifications.show(context,solve,true);
@@ -244,3 +287,4 @@ public class HandJobWorkerTest {
         assertEquals(2,routes.size());opens(ready("solve"),"solverResult");
     }
 }
+

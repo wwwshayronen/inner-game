@@ -58,6 +58,21 @@ test("mobile retries a dropped inspection poll without starting another image re
   assert.equal(hand.solverError, "");
 });
 
+test('one tap in the browser reads the hand and solves automatically without collecting form fields',async()=>{
+  const spot=JSON.parse(readFileSync(new URL('fixtures/105496.json',import.meta.url)));reconstructSolverMath(spot);
+  const calls=[];
+  const {context,hand}=appContext(async(url,options)=>{
+    calls.push({url,body:JSON.parse(options.body)});
+    return Response.json(url.endsWith('/solver/inspect')?{spot,ready:true}:{solution:{street:'river',bestAction:'call'}});
+  });
+  vm.runInContext("navigate=to=>{route=to};collectSolverSpot=()=>{throw new Error('Automatic solving must not read a form')}",context);
+  await vm.runInContext('startHandSolve(hand.id)',context);
+  assert.equal(calls.length,2);
+  assert.ok(calls[0].url.endsWith('/solver/inspect'));assert.ok(calls[1].url.endsWith('/solver/solve'));
+  assert.deepEqual(calls[1].body.spot.heroCards,spot.heroCards);
+  assert.equal(hand.solverStatus,'solved');assert.equal(hand.solverAutoRun,false);
+});
+
 test("mobile displays an extraction failure instead of saving empty details", async () => {
   let calls = 0;
   const { context, hand } = appContext(async () => {
@@ -188,3 +203,4 @@ test("the most frequent action retains its bet size when EVs are unavailable",()
   assert.equal(vm.runInContext("solverMostFrequentAction(strategy)",context),'bet 15');
   assert.equal(vm.runInContext("solverStrategyItem(strategy,solverMostFrequentAction(strategy)).frequency",context),.7);
 });
+

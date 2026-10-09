@@ -224,3 +224,38 @@ body{background:var(--bg)}
 
 .app-shell{background:transparent}
 .btn.secondary.danger-text{color:var(--danger)}
+
+.app-shell.focused-screen{padding-bottom:calc(env(safe-area-inset-bottom) + 32px)}
+.practice-spot{padding:14px}
+.practice-spot-meta{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:12px;line-height:1.5}
+.practice-table{height:286px;min-height:286px;margin-top:12px}
+.practice-table .gg-felt{inset:23px 4px 24px;border-width:6px;box-shadow:none}
+.practice-table .gg-seat{min-width:42px;padding:5px 7px;font-size:11px;line-height:1.2}
+.practice-table .gg-seat small{font-size:9px;line-height:1.3}
+.practice-table .gg-seat.is-folded{color:var(--muted);background:var(--surface);box-shadow:none}
+.practice-table .seat-1{top:0;bottom:auto}.practice-table .seat-2{top:42px;right:0;bottom:auto}.practice-table .seat-3{bottom:72px;right:0;top:auto}.practice-table .seat-4{bottom:0;top:auto}.practice-table .seat-5{bottom:72px;left:0;top:auto}.practice-table .seat-6{top:42px;left:0;bottom:auto}
+.practice-table .gg-center{top:84px;width:100%;gap:10px}
+.practice-table .gg-pot{padding:4px 12px}
+.practice-table .board-cards{gap:4px}
+.practice-table .playing-card.small{width:28px;height:39px;font-size:15px}
+.practice-table .hero-hand-dock{bottom:43px}
+.practice-table .hero-hand-dock .playing-card{width:37px;height:50px;font-size:19px}
+.practice-table .hero-hand-dock .hole-cards{gap:6px}
+.practice-history{display:grid;gap:9px;margin-top:14px;font-size:12px;line-height:1.6}
+.practice-history>div{display:grid;grid-template-columns:44px minmax(0,1fr);gap:9px}
+.practice-history strong{text-transform:capitalize;color:var(--muted);font-weight:500}
+.practice-folds{display:block;margin-top:10px;color:var(--muted);font-size:10px;line-height:1.5}
+.practice-decision{margin-top:20px}
+.practice-decision>.row{align-items:baseline;gap:8px;flex-wrap:wrap}
+.practice-decision .section-title{margin:0;font-size:16px}
+.practice-to-call{font-size:12px;color:var(--muted)}
+.practice-actions.action-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 20px}
+.practice-actions .poker-action{min-height:72px;min-width:0;padding:12px 6px;display:flex;flex-direction:column;justify-content:center;gap:6px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text)}
+.practice-actions .poker-action strong{font-size:14px;line-height:1.2;overflow-wrap:anywhere}
+.practice-actions .poker-action small{font-size:11px;line-height:1.2;color:var(--muted)}
+.practice-actions .poker-action.selected{background:rgba(117,208,175,.14);border:2px solid var(--accent);padding:11px 5px}
+.practice-actions .poker-action.selected strong,.practice-actions .poker-action.selected small{color:var(--accent)}
+.practice-why{display:block;margin-bottom:8px;font-weight:600;font-size:16px}
+.practice-decision .reason-box{min-height:88px;margin:0;resize:vertical;font-size:14px;line-height:1.5}
+.practice-decision .btn{margin-top:12px}
+.practice-decision .form-error:empty{display:none}
