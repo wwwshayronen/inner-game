@@ -263,7 +263,8 @@ function normalizeCapturedTitle(parsed, fallback='Captured hand'){
   }
   return String(parsed?.title||parsed?.tournamentName||fallback||'Captured hand').trim();
 }
-function captureToast(text,type='ok'){let t=document.getElementById('captureToast');if(!t){t=document.createElement('div');t.id='captureToast';document.body.appendChild(t);}t.className='capture-toast '+type;t.textContent=text;requestAnimationFrame(()=>t.classList.add('show'));setTimeout(()=>t.classList.remove('show'),3000);}
+let captureToastTimer;
+function captureToast(text,type='ok'){let t=document.getElementById('captureToast');if(!t){t=document.createElement('div');t.id='captureToast';t.setAttribute('role','status');document.body.appendChild(t);}clearTimeout(captureToastTimer);t.className='capture-toast '+type;t.textContent=text;requestAnimationFrame(()=>t.classList.add('show'));captureToastTimer=setTimeout(()=>t.classList.remove('show'),4000);}
 function notifyHandStatus(stage,hand){
   const title=stage==='analyzing'?'Poker hand detected':stage==='saved'?'Hand saved':stage==='failed'?'Hand needs attention':'Inner Game';
   const handTitle=hand&&normalizeCapturedTitle(hand,handDisplayTitle(hand));
@@ -406,12 +407,12 @@ async function analyzeCapturedScreenshot(dataUrl,source='native',captureSessionI
     autoCandidate:!isManualHandSource(source)
   };
   try{
-    if(source!=='android_auto') notifyHandStatus('analyzing',provisional);
+    captureToast('Screenshot captured · processing…');
+    if(source!=='android_auto'&&!supportsBackgroundHandJobs()) notifyHandStatus('analyzing',provisional);
     const compact=await resizeScreenshot(dataUrl,1120,.74);
     await storeHandImage(provisional.imageKey,compact);
     if(!saveCapturedHand(provisional))return false;
     refreshCaptureUi();
-    captureToast('Screenshot saved · analyzing…');
     await analyzeStoredHand(id,compact);
     return true;
   }catch(e){
@@ -1352,6 +1353,7 @@ function importHandScreenshot(file){
   if(!file)return;
   if(!['image/png','image/jpeg','image/webp'].includes(file.type)){captureToast('Choose a PNG, JPEG, or WebP screenshot.','error');return;}
   if(file.size>10*1024*1024){captureToast('Choose a screenshot smaller than 10 MB.','error');return;}
+  captureToast('Screenshot selected · processing…');
   const reader=new FileReader();
   reader.onerror=()=>captureToast('Could not read this screenshot. Try choosing it again.','error');
   reader.onload=()=>window.innerGameReceiveScreenshot(reader.result,'manual_upload');
@@ -1382,16 +1384,14 @@ function handCard(h,showScope=false,libraryMode=false){
   const title=normalizeCapturedTitle(h,handDisplayTitle(h));
   const scope=showScope?h._sessionLabel:'';
   const note=(h.notes||'').trim();
-  const attr=libraryMode&&h._scope==='session'
-    ? `data-open-library-session="${esc(h._sessionActive?'active':h._sessionId||'')}"`
-    : `data-open-hand="${esc(h.id)}"`;
-  return `<article class="card captured-hand-card option-a ${esc(statusInfo.status)}" ${attr} role="button" tabindex="0" aria-label="${libraryMode&&h._scope==='session'?'Open session hands':'Open '+esc(title)}">
+  const attr=`data-open-hand="${esc(h.id)}"`;
+  return `<article class="card captured-hand-card option-a ${esc(statusInfo.status)}" ${attr} role="button" tabindex="0" aria-label="Open ${esc(title)}">
     <img data-hand-image-key="${esc(h.imageKey)}" alt="">
     <div class="captured-hand-copy">
       <div class="hand-card-top"><strong>${esc(title)}</strong><time>${esc(handLibraryTime(h))}</time></div>
       <small>${esc([scope,h.site,h.blinds||h.stakes].filter(Boolean).join(' · ')||'Poker hand')}</small>
-      <p class="hand-note-preview ${note?'':'empty-note'}">${esc(note||'Add a note to remember why this hand mattered.')}</p>
-      <div class="hand-a-bottom"><span class="hand-status ${esc(statusInfo.status)}">${esc(statusInfo.label)}</span><span class="hand-open-affordance">${libraryMode&&h._scope==='session'?'Open session':'Open'} <b>›</b></span></div>
+      ${note?`<p class="hand-note-preview">${esc(note)}</p>`:''}
+      <div class="hand-a-bottom"><span class="hand-status ${esc(statusInfo.status)}">${esc(statusInfo.label)}</span><span class="hand-open-affordance">View hand <b>›</b></span></div>
     </div>
   </article>`;
 }
@@ -1602,12 +1602,12 @@ function randomThreeHandIds(){
   return ids.slice(0,3);
 }
 function beginPreparation(){
-  state.prep.handWarmup={selectedIds:randomThreeHandIds(),answers:{},currentIndex:0,completed:false,skipped:false};
+  state.prep.handWarmup={bankVersion:HAND_BANK_VERSION,selectedIds:randomThreeHandIds(),answers:{},currentIndex:0,completed:false,skipped:false};
   save(); navigate('prep');
 }
 function ensureHandWarmup(){
-  if(!state.prep.handWarmup || !Array.isArray(state.prep.handWarmup.selectedIds) || state.prep.handWarmup.selectedIds.length!==3){
-    state.prep.handWarmup={selectedIds:randomThreeHandIds(),answers:{},currentIndex:0,completed:false,skipped:false}; save();
+  if(!state.prep.handWarmup || !Array.isArray(state.prep.handWarmup.selectedIds) || state.prep.handWarmup.selectedIds.length!==3 || state.prep.handWarmup.bankVersion!==HAND_BANK_VERSION){
+    state.prep.handWarmup={bankVersion:HAND_BANK_VERSION,selectedIds:randomThreeHandIds(),answers:{},currentIndex:0,completed:false,skipped:false}; save();
   }
   return state.prep.handWarmup;
 }
@@ -1619,43 +1619,62 @@ function boardHTML(cards=[]){ return cards.length?`<div class="board-cards">${ca
 function actionIcon(label){ if(/^Call$/i.test(label))return '<span class="poker-chip" aria-hidden="true"><i></i></span>'; if(/Fold/i.test(label))return '<span class="action-x">×</span>'; if(/^Check$/i.test(label))return '<span class="action-check">✓</span>'; return '<span class="action-up">↑</span>'; }
 const TABLE_POSITIONS=['UTG','HJ','CO','BTN','SB','BB'];
 function tableSeats(h){
+  const heroIndex=TABLE_POSITIONS.indexOf(h.heroPos);
   return TABLE_POSITIONS.map((pos,i)=>{
-    const role=pos===h.heroPos?'hero':pos===h.villainPos?'villain':'';
-    const tag=role==='hero'?'You':role==='villain'?'Villain':'';
-    return `<div class="gg-seat seat-${i+1} ${role}"><span>${pos}</span>${tag?`<small>${tag}</small>`:''}</div>`;
+    const role=pos===h.heroPos?'is-hero':pos===h.villainPos?'is-villain':'';
+    const seat=(i-heroIndex+9)%6+1;
+    const folded=h.actions.some(a=>a.position===pos&&a.action==='fold');
+    return `<div class="gg-seat seat-${seat} ${role} ${folded?'is-folded':''}" aria-label="${pos}${role==='is-hero'?', you':role==='is-villain'?', opponent':''}"><span>${pos}</span>${role?`<small>${role==='is-hero'?'You':'Opponent'}</small>`:''}</div>`;
   }).join('');
 }
-function handProgress(active){ return `<div class="hand-progress">${[0,1,2].map(i=>`<div class="hand-progress-step ${i<active?'done':''} ${i===active?'active':''}"><span>${i+1}</span><small>Hand ${i+1}</small></div>`).join('')}</div>`; }
-function handsIntro(){ const hw=ensureHandWarmup(), hs=selectedHands(), done=Object.keys(hw.answers||{}).filter(id=>hw.selectedIds.includes(id)&&hw.answers[id]?.reason).length; return appShell(`${header('Play <span class="accent">3 Hands</span>','Warm up your decision-making before the session.')}
+function handsIntro(){ const hw=ensureHandWarmup(), done=Object.values(hw.answers||{}).filter(a=>a.submitted).length; return appShell(`${header('Hand <span class="accent">Warm-up</span>','Three decisions before your session.')}
   ${stepper(2)}
-  <section class="card pad hand-intro-card"><div class="row between"><strong>${done} of 3 hands completed</strong><span class="session-meta">Randomized from 50</span></div></section>
-  <section class="card pad stack"><div><div class="section-title">A quick hand exercise</div><p class="body-copy">Choose your action in three real hold’em spots, then explain the thinking behind it.</p></div><div class="warmup-benefit"><span>↗</span><div><strong>Choose what you would do</strong><small>Make the decision before seeing anything else.</small></div></div><div class="warmup-benefit"><span>✎</span><div><strong>Explain why</strong><small>Put your poker reasoning into words.</small></div></div><div class="warmup-benefit"><span>◎</span><div><strong>Focus on process, not perfection</strong><small>This is a warm-up, not a solver exam.</small></div></div></section>
-  <div class="section-title list-heading">Your 3 random hands</div><div class="hand-preview-grid">${hs.map((h,i)=>`<div class="card hand-preview"><strong>Hand ${i+1}</strong><div class="mini-hole">${h.heroHand.map(c=>cardHTML(c,true)).join('')}</div><small>${h.street} · ${h.heroPos}</small></div>`).join('')}</div>
-  <div class="notice">There’s no score here. The goal is to switch your brain into deliberate poker decision-making before you play.</div>
-  <button class="btn primary" data-start-hands>${done?`Continue Hand ${Math.min(done+1,3)}`:'Start Hand 1'} <span>→</span></button><button class="btn ghost" data-skip-hands>Skip for now</button>`,'home'); }
-function handPlay(){ const hw=ensureHandWarmup(), h=currentHand(); if(!h)return handsIntro(); const i=hw.currentIndex||0, a=hw.answers?.[h.id]||{}; return appShell(`${header(`Hand <span class="accent">${i+1} of 3</span>`,`${h.street} spot`)}
-  ${handProgress(i)}
-  <section class="card pad poker-spot"><div class="section-title">${esc(h.game)} • ${esc(h.effective)} effective</div><div class="session-meta">${esc(h.setup)}</div>
-    <div class="gg-table">
-      <div class="gg-felt"></div>
-      ${tableSeats(h)}
-      <div class="gg-center"><div class="gg-pot">Pot <strong>${esc(h.pot)}</strong></div>${boardHTML(h.board)}</div>
-      <div class="hero-hand-dock"><small>Your hand · ${esc(h.heroPos)}</small><div class="hole-cards">${h.heroHand.map(c=>cardHTML(c)).join('')}</div></div>
-    </div>
-    <div class="action-history"><strong>Action History</strong><span>${esc(h.history)}</span></div>
-  </section>
-  <div class="section-title list-heading">What would you do?</div><div class="action-options">${h.options.map((o,idx)=>`<button class="poker-action ${a.action===o?'selected':''}" data-hand-action="${esc(o)}">${actionIcon(o)}<strong>${esc(o)}</strong></button>`).join('')}</div>
-  <section class="card pad"><div class="row between"><div><strong>Confidence</strong><div class="session-meta">How sure are you?</div></div><div class="confidence-row" role="group" aria-label="Decision confidence">${[1,2,3,4,5].map(n=>`<button class="confidence ${Number(a.confidence||4)===n?'selected':''}" data-confidence="${n}" aria-label="Confidence ${n} of 5" aria-pressed="${Number(a.confidence||4)===n}">${n}</button>`).join('')}</div></div></section>
-  <div id="handError" class="form-error" aria-live="polite"></div><button class="btn primary" data-hand-continue>Continue <span>→</span></button>`,'home'); }
-function handExplain(){ const hw=ensureHandWarmup(), h=currentHand(); if(!h)return handsIntro(); const i=hw.currentIndex||0, a=hw.answers?.[h.id]||{}; if(!a.action){ route='handPlay'; return handPlay(); } return appShell(`${header('Explain Your <span class="accent">Thinking</span>',`Hand ${i+1} of 3`)}
-  <section class="card pad choice-summary"><div class="session-meta">Your choice</div><div class="choice-action">${esc(a.action)}</div><div class="session-meta">${h.heroPos} with ${h.heroHand.map(c=>`${c[0]}${suitSymbol(c[1])}`).join(' ')} · ${h.street}</div></section>
-  <section class="card pad"><div class="section-title">Why?</div><div class="session-meta">What makes this the play you want to make?</div><textarea id="handReason" class="reason-box" maxlength="500" placeholder="Explain your ranges, position, board interaction, sizing, pot odds, blockers, exploit, or whatever is driving the decision.">${esc(a.reason||'')}</textarea><div class="reason-prompts"><button data-reason-prompt="Position">+ Position</button><button data-reason-prompt="Ranges">+ Ranges</button><button data-reason-prompt="Pot odds">+ Pot odds</button><button data-reason-prompt="Board texture">+ Board texture</button></div></section>
-  <div class="notice">We’re training clear thinking, not perfect solver answers.</div><div id="reasonError" class="form-error" aria-live="polite"></div><button class="btn primary" data-submit-hand>${i===2?'Finish Warm-up':'Submit Hand'} <span>→</span></button>`,'home'); }
-function handsComplete(){ const hw=ensureHandWarmup(), hs=selectedHands(); return appShell(`${header('Hand Warm-up <span class="accent">Complete</span>','You completed all 3 hands.')}
-  <section class="success-banner"><span>✓</span><div><strong>Nice work.</strong><small>You’ve already started thinking deliberately before the session.</small></div></section>
-  <div class="stack">${hs.map((h,i)=>{const a=hw.answers?.[h.id]||{};return `<section class="card hand-result"><div><small>HAND ${i+1} · ${h.street.toUpperCase()}</small><strong>${esc(a.action||'—')}</strong><p>${esc((a.reason||'').slice(0,92))}${(a.reason||'').length>92?'…':''}</p></div><span class="chev">›</span></section>`}).join('')}</div>
-  <div class="section-title list-heading">Take one idea into your session</div><div class="notice"><strong>Make the reason explicit.</strong><br>Before a big decision, name the main reason for your action instead of reacting automatically.</div>
-  <button class="btn primary" data-nav="review">Continue to Game Plan <span>→</span></button><button class="btn ghost" data-nav="prep">Back to Preparation</button>`,'home'); }
+  <section class="card pad"><strong>${done?`${done} of 3 completed`:'Choose an action. Explain why.'}</strong><p class="body-copy">Practice your thinking with three poker situations. Your hand, the action and your reason stay on one screen.</p></section>
+  <button class="btn primary" data-start-hands>${done?'Continue warm-up':'Start warm-up'} <span>→</span></button><button class="btn ghost" data-skip-hands>Skip for now</button>`,'home'); }
+function handPlay(){
+  const hw=ensureHandWarmup(),h=currentHand();if(!h)return handsIntro();
+  const i=hw.currentIndex||0,a=hw.answers?.[h.id]||{};
+  const decision=h.toCallBb>0?`${practiceAmount(h.toCallBb)} to call`:h.actions.some(x=>x.street===h.street.toLowerCase()&&x.action==='check')?'Checked to you':'You act first';
+  return appShell(`${header(`Hand <span class="accent">${i+1} of 3</span>`,`${h.street} · 6-max cash`)}
+    <section class="card pad poker-spot practice-spot">
+      <div class="practice-spot-meta"><span>${esc(h.heroPos)} vs ${esc(h.villainPos)}</span><span>${esc(h.effective)} starting stacks</span></div>
+      <div class="gg-table practice-table" aria-label="Poker table, you are ${esc(h.heroPos)}">
+        <div class="gg-felt"></div>${tableSeats(h)}
+        <div class="gg-center"><div class="gg-pot">Pot <strong>${esc(h.pot)}</strong></div>${boardHTML(h.board)}</div>
+        <div class="hero-hand-dock"><div class="hole-cards" aria-label="Your cards">${h.heroHand.map(c=>cardHTML(c)).join('')}</div></div>
+      </div>
+      <div class="practice-history">${h.historyRounds.map(r=>`<div><strong>${esc(r.street)}</strong><span>${esc(r.lines.join(' · '))}</span></div>`).join('')}</div>
+      <small class="practice-folds">No rake or antes.</small>
+    </section>
+    <section class="practice-decision" aria-labelledby="decisionTitle"><div class="row between"><h2 id="decisionTitle" class="section-title">Your action</h2><span class="practice-to-call">${esc(decision)}</span></div>
+      <div class="action-options practice-actions" role="group" aria-label="Choose your action">${h.choices.map(c=>`<button type="button" class="poker-action ${a.action===c.value?'selected':''}" data-hand-action="${esc(c.value)}" aria-pressed="${a.action===c.value}" aria-label="${esc(c.value)}"><strong>${esc(c.label)}</strong>${c.detail?`<small>${esc(c.detail)}</small>`:''}</button>`).join('')}</div>
+      <label class="practice-why" for="handReason">Why?</label>
+      <textarea id="handReason" class="reason-box" maxlength="500" placeholder="What is the main reason for your action?" aria-describedby="reasonError">${esc(a.reason||'')}</textarea>
+      <div id="reasonError" class="form-error" role="status"></div>
+      <button class="btn primary" data-submit-hand>${i===2?'Finish warm-up':'Next hand'} <span>→</span></button>
+    </section>`,'home');
+}
+// Restore old navigation links on the unified decision screen.
+function handExplain(){route='handPlay';return handPlay();}
+function choosePracticeAction(action){
+  const hw=ensureHandWarmup(),h=currentHand();if(!h?.options.includes(action))return;
+  const reason=document.getElementById('handReason')?.value??hw.answers[h.id]?.reason??'';
+  hw.answers[h.id]={...(hw.answers[h.id]||{}),action,reason,submitted:false};hw.completed=false;save();
+  document.querySelectorAll('[data-hand-action]').forEach(button=>{const selected=button.dataset.handAction===action;button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',String(selected));});
+  const error=document.getElementById('reasonError');if(error)error.textContent='';
+}
+function submitPracticeHand(){
+  const hw=ensureHandWarmup(),h=currentHand(),input=document.getElementById('handReason'),error=document.getElementById('reasonError');
+  if(!h.options.includes(hw.answers[h.id]?.action)){if(error)error.textContent='Choose an action first.';document.querySelector('[data-hand-action]')?.focus();return;}
+  const reason=(input?.value||'').trim();
+  if(!reason){if(error)error.textContent='Add a short reason for your action.';input?.focus();return;}
+  hw.answers[h.id]={...hw.answers[h.id],reason,submitted:true};
+  if((hw.currentIndex||0)>=2){hw.completed=true;hw.skipped=false;save();navigate('handsComplete');}
+  else{hw.currentIndex=(hw.currentIndex||0)+1;save();navigate('handPlay');}
+}
+function handsComplete(){ const hw=ensureHandWarmup(),hs=selectedHands();return appShell(`${header('Warm-up <span class="accent">Complete</span>','Your three decisions.')}
+  <div class="stack">${hs.map((h,i)=>{const a=hw.answers?.[h.id]||{};return `<section class="card hand-result"><div><small>HAND ${i+1} · ${esc(h.street.toUpperCase())}</small><strong>${esc(a.action||'—')}</strong><p>${esc(a.reason||'')}</p></div></section>`}).join('')}</div>
+  <button class="btn primary" data-nav="review">Continue to session setup <span>→</span></button>`,'home'); }
 
 function review(){ ensurePrepSchedule(); const p=state.prep; const hw=p.handWarmup||{}; const warmupText=hw.completed?'3 hands completed':hw.skipped?'Skipped for this session':'Not completed yet'; return appShell(`${header('Session <span class="accent">Setup</span>','Everything you need before you sit down.')}
   ${stepper(3)}
@@ -1769,7 +1788,6 @@ function sessions(){
   return appShell(`${header('Sessions','Track your play. Find progress.',false)}
   ${handsSwitcher('sessions')}
   ${moneyGraph()}
-  ${gamificationPanel()}
   <section class="card pad"><div class="metrics"><div class="metric"><small>Total Sessions</small><strong>${list.length}</strong></div><div class="metric"><small>Avg Process Score</small><strong>${list.length?avg(list.map(x=>x.process)).toFixed(1):'—'}<span class="session-meta"> / 10</span></strong></div></div></section>
   <div class="section-title list-heading">Recent Sessions</div><section class="session-list session-list-cards">${list.length?list.map(sessionRow).join(''):'<div class="card empty">No sessions yet. Log one after you play.</div>'}</section>
   ${sessionDeleteModal()}`,'sessions');
@@ -1909,13 +1927,11 @@ function bind(){
     const commit=()=>{const v=normalizeGameName(el.value); if(v){el.value=v; rememberGame(v); if(el.dataset.prepText)state.prep[el.dataset.prepText]=v; save();}};
     el.addEventListener('change',commit); el.addEventListener('blur',commit);
   });
-  const startHands=document.querySelector('[data-start-hands]'); if(startHands)startHands.onclick=()=>{ const hw=ensureHandWarmup(); const hs=selectedHands(); let next=hs.findIndex(h=>!hw.answers?.[h.id]?.reason); if(next<0)next=0; hw.currentIndex=next; save(); navigate('handPlay'); };
+  const startHands=document.querySelector('[data-start-hands]'); if(startHands)startHands.onclick=()=>{ const hw=ensureHandWarmup(); const hs=selectedHands(); let next=hs.findIndex(h=>!hw.answers?.[h.id]?.submitted); if(next<0)next=0; hw.currentIndex=next; save(); navigate('handPlay'); };
   const skipHands=document.querySelector('[data-skip-hands]'); if(skipHands)skipHands.onclick=()=>{ const hw=ensureHandWarmup(); hw.skipped=true; hw.completed=false; save(); navigate('review'); };
-  document.querySelectorAll('[data-hand-action]').forEach(el=>el.onclick=()=>{ const hw=ensureHandWarmup(),h=currentHand(); hw.answers[h.id]={...(hw.answers[h.id]||{}),action:el.dataset.handAction,confidence:Number(hw.answers[h.id]?.confidence||4)}; save(); render(); });
-  document.querySelectorAll('[data-confidence]').forEach(el=>el.onclick=()=>{ const hw=ensureHandWarmup(),h=currentHand(); hw.answers[h.id]={...(hw.answers[h.id]||{}),confidence:Number(el.dataset.confidence)}; save(); render(); });
-  const handContinue=document.querySelector('[data-hand-continue]'); if(handContinue)handContinue.onclick=()=>{ const hw=ensureHandWarmup(),h=currentHand(),err=document.getElementById('handError'); if(!hw.answers?.[h.id]?.action){if(err)err.textContent='Choose an action before continuing.';return;} navigate('handExplain'); };
-  document.querySelectorAll('[data-reason-prompt]').forEach(el=>el.onclick=()=>{ const t=document.getElementById('handReason'); if(!t)return; const phrase=el.dataset.reasonPrompt; const prefix=t.value.trim()?`${t.value.trim()} · `:''; t.value=prefix+phrase+': '; t.focus(); });
-  const submitHand=document.querySelector('[data-submit-hand]'); if(submitHand)submitHand.onclick=()=>{ const hw=ensureHandWarmup(),h=currentHand(),t=document.getElementById('handReason'),reason=(t?.value||'').trim(),err=document.getElementById('reasonError'); if(reason.length<8){if(err)err.textContent='Add a short explanation of why you chose that action.';t?.focus();return;} hw.answers[h.id]={...(hw.answers[h.id]||{}),reason}; if((hw.currentIndex||0)>=2){hw.completed=true;hw.skipped=false;save();navigate('handsComplete');}else{hw.currentIndex=(hw.currentIndex||0)+1;save();navigate('handPlay');} };
+  document.querySelectorAll('[data-hand-action]').forEach(el=>el.onclick=()=>choosePracticeAction(el.dataset.handAction));
+  const handReason=document.getElementById('handReason');if(handReason)handReason.oninput=()=>{const hw=ensureHandWarmup(),h=currentHand();hw.answers[h.id]={...(hw.answers[h.id]||{}),reason:handReason.value,submitted:false};hw.completed=false;save();};
+  const submitHand=document.querySelector('[data-submit-hand]');if(submitHand)submitHand.onclick=submitPracticeHand;
   const start=document.querySelector('[data-start-playing]'); if(start)start.onclick=()=>{
     const amount=Number(state.prep.sessionAmount);
     const err=document.getElementById('startError');

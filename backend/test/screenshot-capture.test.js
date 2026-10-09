@@ -71,6 +71,25 @@ test("automatic captures require the current session, while explicit imports sti
   assert.equal(calls.requests.length,3);
 });
 
+test('capture acknowledgement appears before slow resize, storage or analysis',async()=>{
+  const {context,calls,run}=webApp();let release;
+  context.messages=[];context.slowImage=()=>new Promise(resolve=>{release=resolve;});
+  run("captureToast=message=>messages.push(message);resizeScreenshot=slowImage");
+  const processing=run("window.innerGameReceiveScreenshot('data:image/png;base64,test','manual_upload')");
+  assert.equal(context.messages[0],'Screenshot captured · processing…');
+  assert.equal(calls.images.length,0);assert.equal(calls.requests.length,0);
+  release('data:image/png;base64,test');await processing;
+  assert.equal(calls.requests.length,1);
+});
+
+test('library rows open their hand directly and omit empty note prompts',()=>{
+  const {context,run}=webApp();
+  context.hand={id:'saved',title:'River decision',status:'ready',_scope:'session',_sessionId:'session',notes:''};
+  const html=run('handCard(hand,true,true)');
+  assert.match(html,/data-open-hand="saved"/);
+  assert.doesNotMatch(html,/data-open-library-session|Add a note to remember/);
+});
+
 function sessionHistory(run){
   run(`state.sessions=[{id:'previous',game:'NL100',startAt:5000,endAt:15000,captureStartedAt:5000,captureEndedAt:9000,hands:[]}];
     state.activeSession={id:'current',stakes:'NL200',startedAt:10000,hands:[]};`);
@@ -209,3 +228,4 @@ test("the desktop preload exposes session control through the matching IPC chann
   const payload={enabled:false,sessionId:'',startedAt:0};exposed.setAutoScreenshotEnabled(payload);
   assert.deepEqual(calls,[['innergame:set-auto-screenshot-enabled',payload]]);
 });
+

@@ -149,3 +149,17 @@ jobs:
       - name: Validate API source
         working-directory: backend
         run: npm run check
+      - name: Check hand screens on mobile and tablet
+        working-directory: backend
+        run: |
+          npm install --no-save --no-audit --no-fund playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node scripts/check-hand-ui.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Hand-UX-screenshots
+          path: backend/ui-proof/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+

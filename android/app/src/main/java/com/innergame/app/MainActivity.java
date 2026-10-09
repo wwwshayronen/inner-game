@@ -501,21 +501,24 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void notifyAutoCaptureDetected() {
+    private void notifyAutoCaptureDetected(String captureId) {
         try {
             JSONObject payload = new JSONObject();
-            payload.put("stage", "analyzing");
-            payload.put("title", "Poker hand detected");
-            payload.put("body", "Screenshot captured. Analyzing the hand…");
+            payload.put("stage", "capture_processing");
+            payload.put("captureId", captureId);
+            payload.put("title", "Screenshot captured");
+            payload.put("body", "Processing your hand now. We’ll notify you when it’s ready.");
             payload.put("handId", "");
+            if (!hasNotificationPermission()) Toast.makeText(this, "Screenshot captured · processing…", Toast.LENGTH_SHORT).show();
             showHandNotification(payload.toString());
         } catch (Exception ignored) {}
     }
 
-    private void notifyAutoCaptureReadFailed() {
+    private void notifyAutoCaptureReadFailed(String captureId) {
         try {
             JSONObject payload = new JSONObject();
             payload.put("stage", "failed");
+            payload.put("captureId", captureId);
             payload.put("title", "Screenshot capture failed");
             payload.put("body", "Inner Game detected the screenshot but could not read it. Try another screenshot or Share → Inner Game.");
             payload.put("handId", "");
@@ -542,7 +545,7 @@ public final class MainActivity extends Activity {
         lastScreenshotMediaId = mediaId;
         lastScreenshotUri = uriText;
         lastScreenshotHandledAt = now;
-        notifyAutoCaptureDetected();
+        notifyAutoCaptureDetected(captureId);
 
         new Thread(() -> {
             try {
@@ -565,7 +568,7 @@ public final class MainActivity extends Activity {
                         ? ((CaptureStageException) error).stage
                         : "CAPTURE";
                 logCaptureDiagnostic(captureId, stage, diagnosticErrorText(error));
-                notifyAutoCaptureReadFailed();
+                runOnUiThread(() -> notifyAutoCaptureReadFailed(captureId));
             }
         }, "innergame-screenshot-queue").start();
     }
@@ -976,9 +979,10 @@ public final class MainActivity extends Activity {
     private void notifyAutoCaptureQueued(String captureId) {
         try {
             JSONObject payload = new JSONObject();
-            payload.put("stage", "queued");
-            payload.put("title", "Screenshot saved");
-            payload.put("body", "Poker screenshot saved.");
+            payload.put("stage", "capture_processing");
+            payload.put("captureId", captureId);
+            payload.put("title", "Screenshot captured");
+            payload.put("body", "Saved and processing. You can leave Inner Game.");
             payload.put("handId", captureId);
             showHandNotification(payload.toString());
         } catch (Exception ignored) {}
@@ -1076,6 +1080,8 @@ public final class MainActivity extends Activity {
             String stage = data.optString("stage", "");
             String handId = data.optString("handId", "");
             String handView = data.optString("view", "handDetail");
+            boolean captureUpdate = data.has("captureId");
+            boolean processing = "analyzing".equals(stage) || "capture_processing".equals(stage);
 
             Intent openIntent = new Intent(this, MainActivity.class);
             openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -1095,7 +1101,7 @@ public final class MainActivity extends Activity {
 
             NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager == null) return;
-            if (!"analyzing".equals(stage)) manager.cancel(6100);
+            if (!captureUpdate && !processing) manager.cancel(6100);
 
             Notification notification = builder
                     .setSmallIcon(android.R.drawable.ic_menu_camera)
@@ -1103,14 +1109,14 @@ public final class MainActivity extends Activity {
                     .setContentText(body)
                     .setStyle(new Notification.BigTextStyle().bigText(body))
                     .setContentIntent(contentIntent)
-                    .setAutoCancel(!"analyzing".equals(stage))
-                    .setOngoing("analyzing".equals(stage))
-                    .setOnlyAlertOnce(false)
+                    .setAutoCancel(!processing)
+                    .setOngoing(processing)
+                    .setOnlyAlertOnce(captureUpdate)
                     .setCategory(Notification.CATEGORY_STATUS)
-                    .setPriority(Notification.PRIORITY_DEFAULT)
+                    .setPriority(processing ? Notification.PRIORITY_HIGH : Notification.PRIORITY_DEFAULT)
                     .build();
 
-            int id = 6100 + Math.abs(handId.hashCode() % 500);
+            int id = captureUpdate ? HandJobNotifications.progressId(data.getString("captureId")) : 6100 + Math.abs(handId.hashCode() % 500);
             manager.notify(id, notification);
         } catch (Exception ignored) {}
     }
@@ -1299,3 +1305,4 @@ public final class MainActivity extends Activity {
         super.onDestroy();
     }
 }
+
