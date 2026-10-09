@@ -40,6 +40,9 @@ const assert=require('node:assert/strict');
           if(button.scrollWidth>button.clientWidth)issues.push('clipped action');
         }
         if(!document.querySelector('#handReason'))issues.push('why missing from decision page');
+        if(document.querySelector('.tabs,.brand-bar'))issues.push('navigation competes with the practice controls');
+        const hand=currentHand();
+        if(document.querySelector('.practice-spot-meta>span').textContent!==`${hand.heroPos} vs ${hand.villainPos}`)issues.push('seat summary disagrees with hand');
         return issues;
       });
       assert.deepEqual(issues,[],`${id} at ${width}px`);
@@ -51,6 +54,7 @@ const assert=require('node:assert/strict');
   await page.getByRole('button',{name:'Next hand',exact:false}).click();
   await page.getByText('Choose an action first.',{exact:true}).waitFor();
   await page.locator('#handReason').fill('Position and the action so far.');
+  assert.equal(await page.locator('#handReason').evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===el;}),true,'reason input is not covered by navigation');
   await page.locator('[data-hand-action]').nth(1).click();
   await page.locator('[data-hand-action]').nth(2).click();
   assert.equal(await page.locator('#handReason').inputValue(),'Position and the action so far.');

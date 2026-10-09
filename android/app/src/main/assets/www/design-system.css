@@ -225,8 +225,9 @@ body{background:var(--bg)}
 .app-shell{background:transparent}
 .btn.secondary.danger-text{color:var(--danger)}
 
+.app-shell.focused-screen{padding-bottom:calc(env(safe-area-inset-bottom) + 32px)}
 .practice-spot{padding:14px}
-.practice-spot-meta{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:11px;line-height:1.5}
+.practice-spot-meta{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:12px;line-height:1.5}
 .practice-table{height:286px;min-height:286px;margin-top:12px}
 .practice-table .gg-felt{inset:23px 4px 24px;border-width:6px;box-shadow:none}
 .practice-table .gg-seat{min-width:42px;padding:5px 7px;font-size:11px;line-height:1.2}

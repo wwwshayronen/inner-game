@@ -187,7 +187,7 @@ function tabs(active){
 }
 function header(title,sub,back=true){ return `<div class="hero"><div class="topbar">${back?`<button class="back" data-back aria-label="Back">${uiIcon('back')}</button>`:''}<div class="hero-copy"><h1>${title}</h1>${sub?`<p class="subtitle">${sub}</p>`:''}</div></div></div>`; }
 function stepper(active){ const labels=['Breathe','Goals','3 Hands','Plan']; return `<div class="stepper four" aria-label="Preparation progress">${labels.map((l,i)=>`<div class="step ${i<active?'done':''} ${i===active?'active':''}" ${i===active?'aria-current="step"':''}><div class="bubble">${i<active?uiIcon('check'):i+1}</div><span>${l}</span></div>`).join('')}</div>`; }
-function appShell(content,tab='home'){ return `<main class="app-shell page-flow" data-screen="${esc(route)}">${brandBar()}${content}${tabs(tab)}</main>`; }
+function appShell(content,tab='home',focused=false){ return `<main class="app-shell page-flow ${focused?'focused-screen':''}" data-screen="${esc(route)}">${focused?'':brandBar()}${content}${focused?'':tabs(tab)}</main>`; }
 function formatDuration(ms){ const total=Math.max(0,Math.floor((Number(ms)||0)/1000)); const h=Math.floor(total/3600), m=Math.floor((total%3600)/60), s=total%60; return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
 function nativeCall(name,payload={}){
   try{
@@ -1652,7 +1652,7 @@ function handPlay(){
       <textarea id="handReason" class="reason-box" maxlength="500" placeholder="What is the main reason for your action?" aria-describedby="reasonError">${esc(a.reason||'')}</textarea>
       <div id="reasonError" class="form-error" role="status"></div>
       <button class="btn primary" data-submit-hand>${i===2?'Finish warm-up':'Next hand'} <span>→</span></button>
-    </section>`,'home');
+    </section>`,'home',true);
 }
 // Restore old navigation links on the unified decision screen.
 function handExplain(){route='handPlay';return handPlay();}
