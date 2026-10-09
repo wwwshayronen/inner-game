@@ -674,12 +674,15 @@ window.innerGameReceiveHandJob=async input=>{
       hand.reconstructionStatus=failed?'failed':'ready';hand.solverError=failed?message:'';
       if(!failed){hand.solverSpot=result.spot;hand.solverSpotVersion=7;hand.solverResult=null;hand.solverJob=null;hand.solverStatus='';}
     }else{
+      const preparedSpot=job.payload?.spot||result.spot;
+      if(preparedSpot){hand.solverSpot=preparedSpot;hand.solverSpotVersion=7;}
       hand.solverStatus=failed?'failed':'solved';hand.solverError=failed?message:'';hand.solverJob=null;
       if(!failed)hand.solverResult=result.solution;
       const missing=job.error?.payload?.missingFields||job.error?.payload?.missing;
       if(failed&&Array.isArray(missing)&&hand.solverSpot)hand.solverSpot.missingFields=missing;
     }
     hand[field]=null;save();nativeCall('ackHandJob',{requestId});
+    if(job.kind==='reconstruction'&&!failed)await continueHandSolve(hand);
     if(['active','handDetail','handsLibrary','sessionHands','solverReview','solverResult'].includes(route))render();
     return true;
   }finally{backgroundHandDeliveries.delete(requestId);}
@@ -888,9 +891,57 @@ function solverField(label,key,value,type='text',step='any'){
 function solverSelect(label,key,value,options){
   return `<div class="field solver-field"><label>${label}</label><select data-solver-field="${key}">${options.map(([v,l])=>`<option value="${esc(v)}" ${String(value)===String(v)?'selected':''}>${esc(l)}</option>`).join('')}</select></div>`;
 }
+function solverRangeSummary(spot){
+  if(spot?.decisionStreet==='preflop')return '<section class="card pad solver-range-summary"><strong>GTO preflop strategy · Automatic</strong><p>We select the available chart for your position, stack and action history.</p></section>';
+  return `<section class="card pad solver-range-summary"><div class="row between"><strong>GTO-based ranges</strong><span class="solver-range-badge">Automatic</span></div>
+    <div class="solver-range-players"><div><small>HERO ${esc(spot?.heroPosition||'')}</small><strong>Your continuing range</strong></div><div><small>VILLAIN ${esc(spot?.villainPosition||'')}</small><strong>Opponent’s continuing range</strong></div></div>
+    <p>Both ranges come from the solver’s preflop charts and each player’s actions. No range entry needed.</p>
+    <details><summary>Range assumptions</summary><p>Uses the nearest available 40 BB or 100 BB 6-max chart, then your postflop pot and stack. Tournament hands use chip EV, without ICM adjustments.</p></details></section>`;
+}
+function solverVisibleIssues(spot){
+  return [...new Set(solverMissing(spot).map(issue=>{
+    if(/action|preflop|blind post|betting|bet |raise |call |fold |check |player|street:/i.test(issue))return 'A clear betting history up to your decision';
+    if(/flop|pot|stack/i.test(issue))return 'Visible pot and stack sizes';
+    if(/card|board/i.test(issue))return 'Readable hero cards and board';
+    return issue;
+  }))];
+}
+async function continueHandSolve(hand){
+  if(!hand.solverAutoRun)return;
+  hand.solverAutoRun=false;save();
+  const visible=solverReviewHandId===hand.id&&['solverReview','solverResult'].includes(route);
+  if(solverMissing(hand.solverSpot).length){if(visible){route='solverReview';render();}return;}
+  await runSolverForHand(hand.id,{background:!visible});
+}
+async function startHandSolve(id,force=false){
+  const hand=findHandRecord(id);if(!hand)return;
+  solverReviewHandId=id;selectedHandId=id;
+  if(['starting','pending'].includes(hand.solverStatus)){navigate('solverResult');return;}
+  if(hand.solverResult&&!force&&solverResultMatchesSpot(hand.solverResult,hand.solverSpot)){navigate('solverResult');return;}
+  if(force){cancelBackgroundHandJobs(hand,['Reconstruction','Solve']);hand.solverSpot=null;hand.solverSpotVersion=0;}
+  hand.solverAutoRun=true;hand.solverError='';save();
+  if(hand.solverSpot&&hand.solverSpotVersion>=7){navigate('solverReview');await continueHandSolve(hand);return;}
+  // Android owns both stages so closing the WebView cannot pause a solve after
+  // reconstruction. Existing reconstruction jobs can still complete normally.
+  if(typeof window.InnerGameNative?.enqueueHandJob==='function'&&!hand.backgroundReconstructionId){
+    const requestId=handJobRequestId();hand.backgroundSolveId=requestId;hand.solverStatus='starting';hand.solverResult=null;hand.solverAutoRun=false;save();navigate('solverResult');
+    try{
+      const imageDataUrl=await getHandImage(hand.imageKey);
+      if(findHandRecord(id)?.backgroundSolveId!==requestId)return;
+      if(!imageDataUrl)throw new Error('Screenshot image is missing.');
+      await enqueueBackgroundHandJob({requestId,kind:'solve',handId:id,payload:{imageDataUrl,hand:{title:hand.title,gameType:hand.gameType,site:hand.site,stakes:hand.stakes||hand.blinds,heroPosition:hand.heroPosition,heroCards:hand.heroCards,board:hand.board,pot:hand.pot,actionSummary:hand.actionSummary}}});
+      if(hand.backgroundSolveId===requestId){hand.solverStatus='pending';save();render();}
+    }catch(error){
+      if(hand.backgroundSolveId!==requestId)return;
+      hand.backgroundSolveId=null;hand.solverStatus='failed';hand.solverError=String(error?.message||error);save();render();
+    }
+    return;
+  }
+  await inspectHandForSolver(id,force);
+}
 async function inspectHandForSolver(id,force=false){
   const hand=findHandRecord(id); if(!hand)return;
-  if(solverInspectingHandIds.has(id))return;
+  if(solverInspectingHandIds.has(id)){navigate('solverReview');return;}
   solverReviewHandId=id;
   if(hand.backgroundReconstructionId&&hand.reconstructionStatus==='pending'&&!force){navigate('solverReview');return;}
   if(hand.solverSpot&&hand.solverSpotVersion>=7&&!force){ navigate('solverReview'); return; }
@@ -952,8 +1003,9 @@ async function inspectHandForSolver(id,force=false){
     hand.solverJob=null;
     hand.solverStatus='';
     hand.solverError='';
+    hand.reconstructionStatus='ready';
     save();
-    notifyHandJobReady('reconstruction',hand);
+    if(!hand.solverAutoRun)notifyHandJobReady('reconstruction',hand);
   }catch(error){
     hand.solverError=String(error?.message||error);
     hand.reconstructionStatus='failed';
@@ -964,9 +1016,11 @@ async function inspectHandForSolver(id,force=false){
     solverInspectingHandIds.delete(id);
     if(route==='solverReview'&&solverReviewHandId===id)render();
   }
+  if(hand.solverSpot&&hand.reconstructionStatus!=='failed')await continueHandSolve(hand);
 }
 function invalidateHandSolver(hand){
   cancelBackgroundHandJobs(hand);
+  hand.solverAutoRun=false;
   hand.solverSpot=null;hand.solverSpotVersion=0;hand.solverResult=null;hand.solverJob=null;hand.solverStatus='';hand.solverError='';
 }
 function collectSolverSpot(){
@@ -999,21 +1053,24 @@ function solverReview(){
   const h=solverHand();
   if(!h){route='handsLibrary';return handsLibrary();}
   const loading=solverInspectingHandIds.has(h.id)||h.reconstructionStatus==='pending'&&Boolean(h.backgroundReconstructionId);
-  if(loading)return appShell(`${header('Review <span class="accent">Spot</span>','Reading the screenshot for solver-ready details.')}
-    <section class="card pad solver-loading-card"><span class="solver-spinner"></span><strong>Reconstructing the hand…</strong><p>Checking positions, stacks, board and every action up to your decision.${supportsBackgroundHandJobs()?' You can leave the app. We’ll notify you when the hand is ready.':''}</p></section>`,'sessions');
-  if(!h.solverSpot)return appShell(`${header('Review <span class="accent">Spot</span>','We need a complete hand before solving.')}
+  if(loading)return appShell(`${header('Solve <span class="accent">Hand</span>','We’ll take care of the setup.')}
+    <section class="card pad solver-loading-card" role="status"><span class="solver-spinner"></span><strong>Reading your hand…</strong><p>We’re finding your decision and preparing the solve automatically.${supportsBackgroundHandJobs()?' You can leave the app; your progress is saved.':''}</p></section>${solverRangeSummary(h.solverSpot)}`,'sessions');
+  if(!h.solverSpot)return appShell(`${header('Solve <span class="accent">Hand</span>','Your screenshot is saved.')}
     <section class="card pad solver-error-card"><strong>Couldn’t prepare this screenshot</strong><p>${esc(h.solverError||'Try reading the screenshot again.')}</p><button class="btn primary" data-reinspect-solver="${esc(h.id)}">Try again</button></section>`,'sessions');
   const s=h.solverSpot,missing=solverMissing(s),ready=missing.length===0;
   const actionText=solverActionLines(s.actionHistory||[]);
   const notes=(s.extractionNotes||[]).filter(Boolean);
-  return appShell(`${header('Review <span class="accent">Spot</span>','Check the detected details before solving.')}
+  return appShell(`${header('Solve <span class="accent">Hand</span>','Your hand. We handle the setup.')}
     <section class="solver-readiness ${ready?'ready':'needs-review'}">
       <div class="solver-readiness-icon">${ready?'✓':'!'}</div>
-      <div><strong>${ready?'Ready to solve':`${missing.length} detail${missing.length===1?'':'s'} need review`}</strong>
-      <small>${ready?'Complete action history detected.':'We will not solve until the action path is complete.'}</small></div>
+      <div><strong>${ready?'Ready to solve':'Some hand details aren’t clear'}</strong>
+      <small>${ready?'Both players’ ranges are prepared automatically.':'Try reading the screenshot again, or correct the hand below.'}</small></div>
     </section>
-    ${missing.length?`<section class="card pad solver-missing-card"><small class="eyebrow">NEEDED</small>${missing.map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>`:''}
-    <section class="card pad solver-review-card">
+    ${missing.length?`<section class="card pad solver-missing-card"><strong>We need</strong>${solverVisibleIssues(s).map(x=>`<div>• ${esc(x)}</div>`).join('')}<button class="btn primary" data-reinspect-solver="${esc(h.id)}">Read screenshot again</button></section>`:''}
+    <section class="card pad solver-hand-summary"><strong>${esc((s.heroCards||[]).join(' '))} · ${esc(s.heroPosition||'Hero')} vs ${esc(s.villainPosition||'Villain')}</strong><p>${esc(s.decisionStreet)}${s.board?.length?' · '+esc(s.board.join(' ')):''}</p></section>
+    ${solverRangeSummary(s)}
+    ${ready?`<button class="btn primary solver-run-btn" data-run-solver="${esc(h.id)}">Solve hand <span>›</span></button>`:''}
+    <details class="card pad solver-review-card solver-optional-details"><summary>Edit hand details (optional)</summary>
       <div class="solver-grid">
         ${solverSelect('Game','game',s.game,[['NLH','NLH'],['unknown','Unknown']])}
         ${solverSelect('Format','format',s.format,[['cash','Cash'],['tournament','Tournament'],['unknown','Unknown']])}
@@ -1036,15 +1093,9 @@ function solverReview(){
         <label class="solver-complete-check"><input id="solverHistoryComplete" type="checkbox" ${s.actionHistoryComplete?'checked':''}><span><strong>Action history is complete</strong><small>No action is missing from preflop through this screenshot decision.</small></span></label>
       </div>
       ${notes.length?`<div class="solver-inspection-notes">${notes.map(n=>`<div>• ${esc(n)}</div>`).join('')}</div>`:''}
-    </section>
-    <section class="solver-range-assumption card pad">
-      <div><strong>Standard GTO ranges</strong><small>Inner Game derives the preflop ranges from the full action path, then solves the exact postflop stack/tree.</small></div>
-      <span class="solver-range-badge">Enabled</span>
-    </section>
-    <div class="solver-study-note"><strong>Post-hand study only</strong><span>Never use solver output while a real-money hand is in progress.</span></div>
-    <button class="btn primary solver-run-btn" data-run-solver="${esc(h.id)}" ${ready?'':'disabled'}>Run solver <span>›</span></button>
-    <button class="btn ghost" data-save-solver-spot>Save details</button>
-    ${solverDebugPanel(h)}`,'sessions');
+      <button class="btn secondary" data-save-solver-spot>Save corrections & continue</button>
+    </details>
+    <p class="field-hint">For post-hand review and training.</p>`,'sessions');
 }
 function solverFrequencyLabel(frequency){
   const percent=Math.max(0,Math.min(1,Number(frequency)||0))*100;
@@ -1122,14 +1173,14 @@ function solverResult(){
   if(!h){route='handsLibrary';return handsLibrary();}
   if(['starting','pending'].includes(h.solverStatus)){
     return appShell(`${header('GTO <span class="accent">Solution</span>','Your solve is running.')}
-      <section class="card pad solver-running-card"><span class="solver-spinner"></span><strong>Solving the exact spot…</strong><p>Custom trees can take a little while. You can leave this screen; Inner Game will keep the job saved and resume polling later.</p></section>
-      <section class="card pad solver-assumptions"><small class="eyebrow">ASSUMPTIONS</small>${(h.solverJob?.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>
-      ${solverDebugPanel(h)}`,'sessions');
+      <section class="card pad solver-running-card" role="status"><span class="solver-spinner"></span><strong>${h.solverSpot?'Solving your hand…':'Preparing & solving your hand…'}</strong><p>We read the hand, select GTO-based ranges for both players, and find your strategy.${supportsBackgroundHandJobs()?' You can leave the app; we’ll notify you when it’s ready.':' Your solve stays saved while you use the app.'}</p></section>
+      ${solverRangeSummary(h.solverSpot)}`,'sessions');
   }
   const s=h.solverResult;
   if(!s){
+    if(h.solverSpot&&solverMissing(h.solverSpot).length)return solverReview();
     return appShell(`${header('GTO <span class="accent">Solution</span>','')}
-      <section class="card pad solver-error-card"><strong>Solver unavailable</strong><p>${esc(h.solverError||'The solve could not be completed.')}</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Review spot</button></section>
+      <section class="card pad solver-error-card"><strong>Couldn’t finish this solve</strong><p>Your hand is saved. Try again in a moment.</p><button class="btn primary" data-solve-hand="${esc(h.id)}">Try again</button><details><summary>Error details</summary><p>${esc(h.solverError||'The solve could not be completed.')}</p></details></section>
       ${solverDebugPanel(h)}`,'sessions');
   }
   if(!solverResultMatchesSpot(s,h.solverSpot))return appShell(`${header('GTO <span class="accent">Solution</span>','')}
@@ -1148,20 +1199,20 @@ function solverResult(){
     <section class="card pad solver-strategy-card"><div class="section-title">GTO strategy</div>${solverStrategyBars(s.strategy||[])}</section>
     ${ev?`<section class="card pad solver-ev-card"><div class="section-title">${ev.decision?'Action EVs':'EV loss vs best action'}</div><p class="field-hint">${ev.decision?'Measured from this decision. Folding is 0 BB; earlier wagers are sunk costs.':'The solver’s absolute EV reference is unavailable. These differences show the cost of each action; 0 means best.'}</p>${ev.actions.map((action,i)=>`<div class="row between solver-ev-row"><span>${esc(solverActionLabel(action))}</span><strong>${ev.values[i]===null?'Unavailable':(ev.decision?ev.values[i]:ev.losses[i]).toFixed(3)+' BB'}</strong></div>`).join('')}</section>`:''}
     <section class="card pad solver-why-card"><div class="section-title title-with-icon">${uiIcon('light')} Why this action</div><strong>${esc(explanation?.summary||'Compare the strategy mix and EV differences above.')}</strong>${explanation?.details?`<p>${esc(explanation.details)}</p>`:''}${(explanation?.facts||[]).length?`<div class="solver-facts">${explanation.facts.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}</section>
-    <section class="card pad solver-assumptions"><div class="section-title">Assumptions</div>${(s.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</section>
+    ${solverRangeSummary(h.solverSpot)}
+    <details class="card pad solver-assumptions"><summary>Solve assumptions</summary>${(s.assumptions||[]).map(x=>`<div>• ${esc(x)}</div>`).join('')}</details>
     <div class="solver-study-note"><strong>Post-hand study only</strong><span>Solver results are for review and training, not live assistance.</span></div>
-    <button class="btn secondary" data-solve-hand="${esc(h.id)}">Review & solve again</button>
+    <button class="btn secondary" data-reinspect-solver="${esc(h.id)}">Read & solve again</button>
     ${solverDebugPanel(h)}`,'sessions');
 }
-async function runSolverForHand(id){
+async function runSolverForHand(id,options={}){
   const h=findHandRecord(id);if(!h)return;
-  if(h.solverStatus==='starting')return;
-  solverReviewHandId=id;
-  const spot=collectSolverSpot()||h.solverSpot;
-  if(h.solverStatus==='pending')return;
+  if(['starting','pending'].includes(h.solverStatus))return;
+  if(!options.background)solverReviewHandId=id;
+  const spot=options.fromEditor?collectSolverSpot()||h.solverSpot:h.solverSpot;
   const missing=solverMissing(spot);
   if(missing.length){h.solverError='Complete the highlighted hand details first.';save();render();return;}
-  h.solverResult=null;h.solverJob=null;h.solverError='';h.solverStatus='starting';solverDebugAdd(h,'solve:start',{spot});save();route='solverResult';render();
+  h.solverResult=null;h.solverJob=null;h.solverError='';h.solverStatus='starting';solverDebugAdd(h,'solve:start',{spot});save();if(!options.background)route='solverResult';render();
   try{
     if(supportsBackgroundHandJobs()){
       h.backgroundSolveId=handJobRequestId();h.solverStatus='pending';save();render();
@@ -1918,17 +1969,17 @@ function bind(){
     const h=findHandRecord(id);if(!h)return;
     solverReviewHandId=id;selectedHandId=id;
     if(h.solverResult && route==='handDetail'){navigate('solverResult');return;}
-    inspectHandForSolver(id,false);
+    startHandSolve(id);
   });
-  document.querySelectorAll('[data-reinspect-solver]').forEach(el=>el.onclick=()=>inspectHandForSolver(el.dataset.reinspectSolver,true));
-  const saveSolverSpot=document.querySelector('[data-save-solver-spot]');if(saveSolverSpot)saveSolverSpot.onclick=()=>{collectSolverSpot();captureToast('Solver details saved ✓');render();};
+  document.querySelectorAll('[data-reinspect-solver]').forEach(el=>el.onclick=()=>startHandSolve(el.dataset.reinspectSolver,true));
+  const saveSolverSpot=document.querySelector('[data-save-solver-spot]');if(saveSolverSpot)saveSolverSpot.onclick=async()=>{const h=solverHand();collectSolverSpot();h.solverAutoRun=true;await continueHandSolve(h);render();};
   const copySolverDebug=document.querySelector('[data-copy-solver-debug]');if(copySolverDebug)copySolverDebug.onclick=async()=>{
     const h=solverHand();if(!h)return;
     const payload=solverDebugText(h);
     try{await navigator.clipboard.writeText(payload);captureToast('Debug trace copied ✓');}
     catch{captureToast('Could not copy debug trace.','error');}
   };
-  document.querySelectorAll('[data-run-solver]').forEach(el=>el.onclick=()=>runSolverForHand(el.dataset.runSolver));
+  document.querySelectorAll('[data-run-solver]').forEach(el=>el.onclick=()=>runSolverForHand(el.dataset.runSolver,{fromEditor:true}));
   document.querySelectorAll('[data-save-hand-notes]').forEach(el=>el.onclick=()=>{const h=findHandRecord(el.dataset.saveHandNotes);if(!h)return;h.notes=(document.getElementById('handNotes')?.value||'').trim();save();const hint=document.getElementById('notesSavedHint');if(hint){hint.textContent='Saved';setTimeout(()=>{if(hint)hint.textContent='';},1600);}captureToast('Note saved ✓');});
   document.querySelectorAll('[data-edit-hand]').forEach(el=>el.onclick=()=>{pendingCapturedHand=findHandRecord(el.dataset.editHand);if(pendingCapturedHand)navigate('captureReview');});
   document.querySelectorAll('[data-delete-hand]').forEach(el=>el.onclick=()=>{removeCapturedHand(el.dataset.deleteHand);selectedHandId=null;navigate(handReturnRoute==='handDetail'?'handsLibrary':handReturnRoute);});
@@ -1963,3 +2014,4 @@ syncAutoScreenshotWatcher();
 render();
 setTimeout(resumePendingSolverJobs,700);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumePendingSolverJobs();});
+

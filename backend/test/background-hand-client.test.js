@@ -9,7 +9,7 @@ function client(saved){
   const calls={jobs:[],ack:[],cancel:[],images:[]};let next=0,storage=saved||null;
   const bridge={enqueueHandJob:json=>{calls.jobs.push(JSON.parse(json));return '{"accepted":true}';},
     ackHandJob:json=>calls.ack.push(JSON.parse(json)),cancelHandJobs:json=>calls.cancel.push(JSON.parse(json)),ackNativeAnalysis:()=>{}};
-  const context=vm.createContext({window:{InnerGameNative:bridge},structuredClone,AbortSignal,console,
+  const context=vm.createContext({window:{InnerGameNative:bridge,scrollTo:()=>{}},structuredClone,AbortSignal,console,
     localStorage:{getItem:key=>key==='innerGame.v5'?storage:null,setItem:(_key,value)=>storage=value},
     crypto:{randomUUID:()=>`job-${++next}`},fetch:()=>assert.fail('Native jobs must not depend on WebView polling.'),
     storeImage:(key,data)=>calls.images.push({key,data}),setTimeout:()=>0,
@@ -35,6 +35,49 @@ test('reconstruction is queued natively, persists while pending and collects int
   assert.equal(restored.run('findHandRecord("hand").solverSpotVersion'),7);
   assert.equal(restored.run('findHandRecord("hand").reconstructionStatus'),'ready');
   assert.equal(restored.calls.ack.length,1);assert.equal(restored.calls.jobs.length,0);
+});
+
+test('one tap queues a complete Android workflow once, without a technical review form',async()=>{
+  const app=client();addHand(app);
+  await app.run("startHandSolve('hand')");await app.run("startHandSolve('hand')");
+  assert.equal(app.calls.jobs.length,1);
+  assert.equal(app.calls.jobs[0].kind,'solve');
+  assert.match(app.calls.jobs[0].payload.imageDataUrl,/^data:image/);
+  assert.equal(app.run('route'),'solverResult');
+  const html=app.run('solverResult()');
+  assert.match(html,/GTO-based ranges/);assert.match(html,/HERO/);assert.match(html,/VILLAIN/);
+  assert.doesNotMatch(html,/data-solver-field|solverActionHistory|Solver diagnostics/);
+});
+
+test('a chained solve delivers its prepared hand and final result after relaunch',async()=>{
+  const app=client();addHand(app);await app.run("startHandSolve('hand')");
+  const queued=app.calls.jobs[0],restored=client(app.saved()),spot=fixture();reconstructSolverMath(spot);
+  await deliver(restored,{...queued,payload:undefined,status:'complete',result:{spot,solution:{street:'river',bestAction:'fold'}}});
+  assert.equal(restored.run('findHandRecord("hand").solverStatus'),'solved');
+  assert.equal(restored.run('findHandRecord("hand").solverSpotVersion'),7);
+  assert.equal(restored.run('findHandRecord("hand").solverSpot.heroCards.join(" ")'),spot.heroCards.join(' '));
+  assert.equal(restored.calls.jobs.length,0);
+});
+
+test('an incomplete one-tap read preserves the spot and offers retry with optional corrections',async()=>{
+  const app=client();addHand(app);await app.run("startHandSolve('hand')");
+  const queued=app.calls.jobs[0],spot=fixture();spot.missingFields=['Hero cards'];
+  await deliver(app,{...queued,status:'failed',result:{spot},error:{message:'Some details are unclear',payload:{missingFields:spot.missingFields}}});
+  assert.equal(app.calls.jobs.length,1);
+  const html=app.run('solverResult()');
+  assert.match(html,/Read screenshot again/);
+  assert.match(html,/<details class="[^"]*solver-optional-details"><summary>Edit hand details \(optional\)/);
+  assert.doesNotMatch(html,/solver-optional-details[^>]* open/);
+});
+
+test('automatic continuation solves the correct hand without stealing another hand’s screen or fields',async()=>{
+  const app=client(),spot=fixture();reconstructSolverMath(spot);addHand(app,spot);
+  app.run("findHandRecord('hand').solverAutoRun=true;state.generalHands.push({id:'other',solverSpot:{heroCards:['As','Ks']}});solverReviewHandId='other';route='solverReview';document.querySelectorAll=()=>[{dataset:{solverField:'heroCards'},value:'As Ks'}]");
+  await app.run("continueHandSolve(findHandRecord('hand'))");
+  assert.equal(app.calls.jobs.length,1);
+  assert.equal(app.calls.jobs[0].handId,'hand');
+  assert.deepEqual(app.calls.jobs[0].payload.spot.heroCards,spot.heroCards);
+  assert.equal(app.run('solverReviewHandId'),'other');assert.equal(app.run('route'),'solverReview');
 });
 
 test('native solves are queued only once and preserve the full calibrated solver response',async()=>{
@@ -128,3 +171,4 @@ test('notification links open the matching hand and the requested reconstruction
   app.run('window.innerGameOpenHand("hand","solverReview")');assert.equal(app.run('route'),'solverReview');
   app.run('window.innerGameOpenHand("hand","unknown")');assert.equal(app.run('route'),'handDetail');
 });
+

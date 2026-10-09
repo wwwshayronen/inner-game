@@ -76,9 +76,15 @@ public class HandJobWorker extends Worker {
             stage="foreground";
             setForegroundAsync(getForegroundInfo()).get();
             if(isStopped()||HandJobStore.read(context,id)==null)return Result.success();
+            // A one-tap solve may begin with a screenshot. Persist the boundary
+            // between reading and solving so retries never repeat a paid stage.
+            for(int phase=0;phase<2;phase++) {
+            if(isStopped()||HandJobStore.read(context,id)==null)return Result.success();
+            JSONObject payload=job.getJSONObject("payload");
+            boolean preparing="solve".equals(job.optString("kind"))&&!payload.has("spot")&&payload.has("imageDataUrl");
             if(job.optString("serverJobId").isEmpty()) {
                 stage="submit";
-                JSONObject request=new JSONObject();request.put("requestId",id);request.put("kind",job.getString("kind"));request.put("payload",job.getJSONObject("payload"));
+                JSONObject request=new JSONObject();request.put("requestId",preparing?id+"-read":id);request.put("kind",preparing?"reconstruction":job.getString("kind"));request.put("payload",payload);
                 Response response=post(base,"/hand-jobs/start",request);
                 if(response.status>=500||response.status==429)return Result.retry();
                 if(response.status>=400) { job.put("status","failed");job.put("error",new JSONObject().put("message",response.body.optString("message",response.body.optString("error","Could not submit this hand.")))); }
@@ -102,6 +108,31 @@ public class HandJobWorker extends Worker {
             }
             if(isStopped())return Result.retry();
             if("pending".equals(job.optString("status")))return Result.retry();
+            if(preparing&&"complete".equals(job.optString("status"))) {
+                JSONObject result=job.optJSONObject("result");
+                JSONObject spot=result==null?null:result.optJSONObject("spot");
+                if(spot==null||!result.optBoolean("ready")||(spot.optJSONArray("missingFields")!=null&&spot.optJSONArray("missingFields").length()>0)) {
+                    job.put("status","failed");
+                    JSONObject details=new JSONObject();
+                    if(spot!=null&&spot.has("missingFields"))details.put("missingFields",spot.get("missingFields"));
+                    job.put("error",new JSONObject().put("message","Some hand details aren’t clear. Open the hand to read the screenshot again or correct them.").put("payload",details));
+                    break;
+                }
+                job.put("payload",new JSONObject().put("spot",spot));
+                job.put("status","pending");job.remove("serverJobId");job.remove("result");job.remove("error");
+                if(!HandJobStore.write(context,job,false))return Result.success();
+                continue;
+            }
+            break;
+            }
+            // MainActivity omits request payloads when delivering completed
+            // jobs. Return the prepared spot with the result for the UI.
+            JSONObject prepared=job.getJSONObject("payload").optJSONObject("spot");
+            if("solve".equals(job.optString("kind"))&&prepared!=null) {
+                JSONObject result=job.optJSONObject("result");
+                if(result==null)result=new JSONObject();
+                job.put("result",result.put("spot",prepared));
+            }
             job.put("completedAt",System.currentTimeMillis());
             if(HandJobStore.write(context,job,false))HandJobNotifications.show(context,job,true);
             return Result.success();
@@ -120,3 +151,4 @@ public class HandJobWorker extends Worker {
         }
     }
 }
+
