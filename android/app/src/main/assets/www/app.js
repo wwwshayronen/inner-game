@@ -820,7 +820,9 @@ function solverHttpPanel(hand){
     '<h4>Request body</h4><pre>'+esc(JSON.stringify(event.request,null,2))+'</pre><h4>'+(event.error?'Connection error':'Server response')+'</h4><pre>'+esc(typeof event.response==='string'?event.response:JSON.stringify(event.response??event.error,null,2))+'</pre></details>').join('');
 }
 function solverRefreshDebugPanel(hand){
-  if(typeof document==='undefined'||solverHand()?.id!==hand?.id)return;
+  if(typeof document==='undefined')return;
+  const panel=document.getElementById('solverApiDebug');
+  if(!panel||panel.dataset.solverDebugHand!==hand?.id)return;
   const exchanges=document.getElementById('solverHttpOutput'),trace=document.getElementById('solverDebugOutput');
   if(exchanges){
     const open=new Set([...exchanges.querySelectorAll('details[open]')].map(element=>element.dataset.debugKey));
@@ -848,8 +850,8 @@ function solverDebugPanel(hand){
   if(!SOLVER_DEBUG_BUILD)return "";
   const count=(hand?.solverDebug||[]).length;
   const errorBadge=hand?.solverError?'<span class="negative">error</span>':'';
-  return '<details class="card pad solver-debug-card"><summary>Solver API debug · requests & responses</summary>'+
-    '<div class="row between"><div><small class="eyebrow">DEBUG BUILD</small><div class="section-title">Solver trace</div></div><button class="btn tiny secondary" data-copy-solver-debug>Copy trace</button></div>'+
+  return '<details id="solverApiDebug" class="card pad solver-debug-card" data-solver-debug-hand="'+esc(hand?.id||'')+'"><summary>Solver API debug · requests & responses</summary>'+
+    '<div class="row between"><div><small class="eyebrow">DEBUG BUILD</small><div class="section-title">Solver trace</div></div><button class="btn tiny secondary" data-copy-solver-debug="'+esc(hand?.id||'')+'">Copy trace</button></div>'+
     '<div class="solver-debug-summary"><span>'+count+' events</span><span>'+esc(hand?.solverStatus||'idle')+'</span>'+errorBadge+'</div>'+
     '<p class="field-hint">Responses from the Inner Game API. Expand a request to inspect its body and server response. Screenshots are omitted; oversized entries are marked as truncated.</p>'+
     '<div id="solverHttpOutput">'+solverHttpPanel(hand)+'</div>'+
@@ -1990,7 +1992,7 @@ function bind(){
   document.querySelectorAll('[data-reinspect-solver]').forEach(el=>el.onclick=()=>inspectHandForSolver(el.dataset.reinspectSolver,true));
   const saveSolverSpot=document.querySelector('[data-save-solver-spot]');if(saveSolverSpot)saveSolverSpot.onclick=()=>{collectSolverSpot();captureToast('Solver details saved ✓');render();};
   const copySolverDebug=document.querySelector('[data-copy-solver-debug]');if(copySolverDebug)copySolverDebug.onclick=async()=>{
-    const h=solverHand();if(!h)return;
+    const h=findHandRecord(copySolverDebug.dataset.copySolverDebug);if(!h)return;
     const payload=solverDebugText(h);
     try{await navigator.clipboard.writeText(payload);captureToast('Debug trace copied ✓');}
     catch{captureToast('Could not copy debug trace.','error');}
